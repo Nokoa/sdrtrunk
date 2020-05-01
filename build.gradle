@@ -92,6 +92,10 @@ dependencies {
     compile "org.openjfx:javafx-swing:13.0.1:win"
     compile "org.openjfx:javafx-swing:13.0.1:linux"
     compile "org.openjfx:javafx-swing:13.0.1:mac"
+
+    // https://mvnrepository.com/artifact/com.googlecode.json-simple/json-simple
+    compile group: 'com.googlecode.json-simple', name: 'json-simple', version: '1.1'
+
 }
 
 application {

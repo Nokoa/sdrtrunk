@@ -22,18 +22,24 @@ package io.github.dsheirer.record;
 import io.github.dsheirer.audio.AudioFormats;
 import io.github.dsheirer.audio.AudioSegment;
 import io.github.dsheirer.audio.convert.MP3AudioConverter;
+import io.github.dsheirer.identifier.*;
+import io.github.dsheirer.identifier.configuration.*;
 import io.github.dsheirer.record.wave.AudioMetadata;
 import io.github.dsheirer.record.wave.AudioMetadataUtils;
 import io.github.dsheirer.record.wave.WaveWriter;
 import io.github.dsheirer.sample.ConversionUtils;
+import org.apache.commons.io.FilenameUtils;
+import org.json.simple.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Map;
 
 /**
@@ -67,6 +73,74 @@ public class AudioSegmentRecorder
                 throw new IllegalArgumentException("Unrecognized recording format [" + recordFormat.name() + "]");
         }
     }
+    public static void writeMetaJson(AudioSegment audioSegment, Path path) {
+        IdentifierCollection identifierCollection = audioSegment.getIdentifierCollection();
+
+        Identifier system = identifierCollection.getIdentifier(IdentifierClass.CONFIGURATION, Form.SYSTEM, Role.ANY);
+        String systemString = ((SystemConfigurationIdentifier) system).getValue();
+
+        Identifier site = identifierCollection.getIdentifier(IdentifierClass.CONFIGURATION, Form.SITE, Role.ANY);
+        String siteString = ((SiteConfigurationIdentifier) site).getValue();
+
+        Identifier channel = identifierCollection.getIdentifier(IdentifierClass.CONFIGURATION, Form.CHANNEL, Role.ANY);
+        String channelString = ((ChannelNameConfigurationIdentifier) channel).getValue();
+
+        Identifier decoder = identifierCollection.getIdentifier(IdentifierClass.CONFIGURATION, Form.DECODER_TYPE,
+                Role.ANY);
+        String decoderString = ((DecoderTypeConfigurationIdentifier) decoder).getValue().getDisplayString();
+
+        Identifier frequency = identifierCollection.getIdentifier(IdentifierClass.CONFIGURATION,
+                Form.CHANNEL_FREQUENCY, Role.ANY);
+        String frequencyString = ((FrequencyConfigurationIdentifier) frequency).getValue() + "";
+
+        ArrayList<String> talkgroups = new ArrayList<>();
+        ArrayList<String> units = new ArrayList<>();
+
+        boolean tones = false;
+
+
+        for (Identifier to : identifierCollection.getIdentifiers(Role.TO)) {
+            talkgroups.add(to.toString());
+            break;
+        }
+//        Identifier from = identifierCollection.getIdentifier(IdentifierClass.USER, Form.TONE, Role.FROM);
+
+
+
+        for (Identifier from : identifierCollection.getIdentifiers(Role.FROM)) {
+            units.add(from.toString());
+            break;
+        }
+
+
+        for (Identifier identifier : identifierCollection.getIdentifiers(Role.FROM)) {
+            if (identifier.getForm() == Form.TONE) {
+                tones = true;
+                break;
+            }
+        }
+
+        JSONObject jsonObject = new JSONObject();
+        jsonObject.put("system", systemString);
+        jsonObject.put("site", siteString);
+        jsonObject.put("channel", channelString);
+        jsonObject.put("decoder", decoderString);
+        jsonObject.put("frequency", frequencyString);
+        jsonObject.put("talkgroups", talkgroups.size() > 0 ? talkgroups.get(0) : "-1");
+        jsonObject.put("units", units.size() > 0 ? units.get(0) : "-1");
+        jsonObject.put("date", System.currentTimeMillis());
+        jsonObject.put("tones", tones);
+
+
+        try {
+            FileWriter file = new FileWriter(FilenameUtils.removeExtension(path.toString()) + ".json");
+            file.write(jsonObject.toJSONString());
+            file.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+
+    }
 
     /**
      * Records the audio segment as an MP3 file to the specified path.
@@ -78,6 +152,7 @@ public class AudioSegmentRecorder
     {
         if(audioSegment.hasAudio())
         {
+            writeMetaJson(audioSegment, path);
             OutputStream outputStream = new FileOutputStream(path.toFile());
 
             //Write ID3 metadata
