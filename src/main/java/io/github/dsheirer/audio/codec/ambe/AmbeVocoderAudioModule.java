@@ -35,7 +35,7 @@ public abstract class AmbeVocoderAudioModule extends AbstractAudioModule impleme
     // Define AMBE server parameters (these could be moved to UserPreferences if needed)
     private static final String AMBE_SERVER_ADDRESS = "192.168.1.100"; // Default localhost for the emulator
     private static final int AMBE_SERVER_PORT = 25565; // Default port used by md380-emu AMBEServer
-    private static final int AMBE_CLIENT_POOL_SIZE = 20;
+    private static final int AMBE_CLIENT_POOL_SIZE = 40;
     protected final UserPreferences mUserPreferences;
     protected AmbeClient mAmbeClient;
     protected List<byte[]> mQueuedAmbeFrames = new ArrayList<>(); // To queue frames before encryption state is known
@@ -118,7 +118,7 @@ public abstract class AmbeVocoderAudioModule extends AbstractAudioModule impleme
         super.dispose();
         MyEventBus.getGlobalEventBus().unregister(this);
         releaseAmbeClient(); // Release client when module is disposed
-        mLog.info("AmbeVocoderAudioModule disposed for timeslot: " + getTimeslot());
+//        mLog.info("AmbeVocoderAudioModule disposed for timeslot: " + getTimeslot());
     }
 
     @Override
@@ -173,6 +173,8 @@ public abstract class AmbeVocoderAudioModule extends AbstractAudioModule impleme
 //                        mLog.trace("Received PCM from client (Timeslot: {}, Received Count: {}, Samples: {}, Timestamp: {}) - PCM (first 10 bytes): {}",
 //                                getTimeslot(), pcmFramesReceivedFromAmbeClient, floatPcmData.length, System.currentTimeMillis(), bytesToHex(Arrays.copyOf(pcmData, Math.min(pcmData.length, 10))));
                     }
+                    mAmbeClient.returnPcmBufferToPool(pcmData); // <--- ADD OR ENSURE THIS LINE IS CALLED
+
                 } else {
                     if (mLog.isTraceEnabled()) {
                         mLog.trace("No PCM received from client for last AMBE frame (ID: {}, ClientsAvialable: {}, Timeslot: {}, Sent Count: {}, Timestamp: {}, AmbeClient: {})",mAmbeClient.getID(), sAmbeClientPool.getAvailableClients(),

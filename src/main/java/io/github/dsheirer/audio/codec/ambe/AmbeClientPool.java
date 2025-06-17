@@ -47,7 +47,6 @@ public class AmbeClientPool {
         for (int i = 0; i < poolSize; i++) {
             try {
                 AmbeClient client = new AmbeClient(serverAddress, serverPort, i + 1);
-                client.initializeAmbeChip(); // Initialize each client once
                 availableClients.put(client); // Add to available clients
                 mLog.info("AmbeClient #" + (i + 1) + " initialized and added to pool (Local Port: " + client.getSocketLocalPort() + ").");
             } catch (IOException | InterruptedException e) {
