@@ -33,7 +33,7 @@ public abstract class AmbeVocoderAudioModule extends AbstractAudioModule impleme
     private static final Logger mLog = LoggerFactory.getLogger(AmbeVocoderAudioModule.class);
 
     // Define AMBE server parameters (these could be moved to UserPreferences if needed)
-    private static final String AMBE_SERVER_ADDRESS = "192.168.1.100"; // Default localhost for the emulator
+    private static final String AMBE_SERVER_ADDRESS = "127.0.0.1"; // Default localhost for the emulator
     private static final int AMBE_SERVER_PORT = 25565; // Default port used by md380-emu AMBEServer
     private static final int AMBE_CLIENT_POOL_SIZE = 40;
     protected final UserPreferences mUserPreferences;
