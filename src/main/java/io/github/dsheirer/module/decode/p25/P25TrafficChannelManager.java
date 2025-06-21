@@ -52,9 +52,11 @@ import io.github.dsheirer.module.decode.p25.identifier.channel.P25P2ExplicitChan
 import io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1;
 import io.github.dsheirer.module.decode.p25.phase1.message.IFrequencyBand;
 import io.github.dsheirer.module.decode.p25.phase1.message.P25P1Message;
+import io.github.dsheirer.module.decode.p25.phase1.message.lc.standard.LCRFSSStatusBroadcast;
 import io.github.dsheirer.module.decode.p25.phase1.message.pdu.ambtc.osp.AMBTCNetworkStatusBroadcast;
 import io.github.dsheirer.module.decode.p25.phase1.message.tsbk.Opcode;
 import io.github.dsheirer.module.decode.p25.phase1.message.tsbk.standard.osp.NetworkStatusBroadcast;
+import io.github.dsheirer.module.decode.p25.phase1.message.tsbk.standard.osp.RFSSStatusBroadcast;
 import io.github.dsheirer.module.decode.p25.phase2.DecodeConfigP25Phase2;
 import io.github.dsheirer.module.decode.p25.phase2.enumeration.ScrambleParameters;
 import io.github.dsheirer.module.decode.p25.phase2.message.mac.MacOpcode;
@@ -121,11 +123,16 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     private TrafficChannelTeardownMonitor mTrafficChannelTeardownMonitor = new TrafficChannelTeardownMonitor();
     private Channel mParentChannel;
     private ScrambleParameters mPhase2ScrambleParameters;
+    private NetworkStatusBroadcast mTSBKNetworkStatusBroadcast;
+    private AMBTCNetworkStatusBroadcast mAMBTCNetworkStatusBroadcast;
+    private LCRFSSStatusBroadcast mLCRFSSStatusBroadcast;
+    private RFSSStatusBroadcast mTSBKRFSSStatusBroadcast;
     private Listener<IMessage> mMessageListener;
     private boolean mIgnoreDataCalls;
     //Used only for data calls
     private DecodeEventDuplicateDetector mDuplicateDetector = new DecodeEventDuplicateDetector();
     private TalkerAliasManager mTalkerAliasManager = new TalkerAliasManager();
+
 
     /**
      * Constructs an instance.
@@ -1331,9 +1338,30 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                            IdentifierCollection ic, DecodeEventType decodeEventType,
                                            boolean isDataChannelGrant, long timestamp)
     {
-        if(mPhase2ScrambleParameters != null && ic instanceof MutableIdentifierCollection)
+        if(  ic instanceof MutableIdentifierCollection)
         {
-            ((MutableIdentifierCollection)ic).silentUpdate(ScrambleParameterIdentifier.create(mPhase2ScrambleParameters));
+            if(mPhase2ScrambleParameters != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(ScrambleParameterIdentifier.create(mPhase2ScrambleParameters));
+            }
+
+            // Add system identifiers from the captured broadcast messages
+            if (mTSBKNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getNAC());
+            } else if (mAMBTCNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getNAC());
+            }
+
+            if(mTSBKRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getSite());
+            } else if (mLCRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getSite());
+            }
         }
 
         int timeslot = apco25Channel.getTimeslot();
@@ -1653,7 +1681,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     /**
      * Processes the decoded message stream and captures P25 Phase II randomizer (scramble) parameters from the TSBK
      * network status broadcast message so that we can pre-load any Phase2 channels with the correct descrambler
-     * sequence.
+     * sequence. As well as System information
      *
      * @return listener to process the message stream.
      */
@@ -1663,15 +1691,31 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         if(mMessageListener == null)
         {
             mMessageListener = message -> {
-                if(mPhase2ScrambleParameters == null && message.isValid())
+                if(message.isValid())
                 {
                     if(message instanceof NetworkStatusBroadcast nsb)
                     {
-                        mPhase2ScrambleParameters = nsb.getScrambleParameters();
+                        mTSBKNetworkStatusBroadcast = nsb;
+                        if(mPhase2ScrambleParameters == null)
+                        {
+                            mPhase2ScrambleParameters = nsb.getScrambleParameters();
+                        }
                     }
-                    else if(message instanceof AMBTCNetworkStatusBroadcast nsb)
+                    else if(message instanceof AMBTCNetworkStatusBroadcast ansb)
                     {
-                        mPhase2ScrambleParameters = nsb.getScrambleParameters();
+                        mAMBTCNetworkStatusBroadcast = ansb;
+                        if(mPhase2ScrambleParameters == null)
+                        {
+                            mPhase2ScrambleParameters = ansb.getScrambleParameters();
+                        }
+                    }
+                    else if (message instanceof LCRFSSStatusBroadcast lcrfss)
+                    {
+                        mLCRFSSStatusBroadcast = lcrfss;
+                    }
+                    else if (message instanceof RFSSStatusBroadcast tsbkrfss)
+                    {
+                        mTSBKRFSSStatusBroadcast = tsbkrfss;
                     }
                 }
             };

@@ -29,15 +29,16 @@ import io.github.dsheirer.controller.channel.event.ChannelStartProcessingRequest
 import io.github.dsheirer.controller.channel.event.ChannelStopProcessingRequest;
 import io.github.dsheirer.controller.channel.event.PreloadDataContent;
 import io.github.dsheirer.controller.channel.map.ChannelMapModel;
-import io.github.dsheirer.identifier.Form;
-import io.github.dsheirer.identifier.Identifier;
-import io.github.dsheirer.identifier.IdentifierClass;
-import io.github.dsheirer.identifier.IdentifierUpdateNotification;
+import io.github.dsheirer.identifier.*;
 import io.github.dsheirer.identifier.decoder.DecoderLogicalChannelNameIdentifier;
 import io.github.dsheirer.module.Module;
 import io.github.dsheirer.module.ProcessingChain;
 import io.github.dsheirer.module.decode.DecoderFactory;
 import io.github.dsheirer.module.decode.event.IDecodeEvent;
+import io.github.dsheirer.module.decode.p25.identifier.APCO25Rfss;
+import io.github.dsheirer.module.decode.p25.identifier.APCO25Site;
+import io.github.dsheirer.module.decode.p25.identifier.APCO25System;
+import io.github.dsheirer.module.decode.p25.identifier.APCO25Wacn;
 import io.github.dsheirer.module.log.EventLogManager;
 import io.github.dsheirer.preference.UserPreferences;
 import io.github.dsheirer.record.RecorderFactory;
@@ -508,6 +509,36 @@ public class ChannelProcessingManager implements Listener<ChannelEvent>
                         IdentifierUpdateNotification scrambleNotification = new IdentifierUpdateNotification(scrambleParameters,
                             IdentifierUpdateNotification.Operation.ADD, timeslot);
                         processingChain.getChannelState().updateChannelStateIdentifiers(scrambleNotification);
+                    }
+
+                    for(Identifier apcoSystemIdent: request.getIdentifierCollection()
+                            .getIdentifiers(Role.BROADCAST))
+                    {
+                        if(apcoSystemIdent instanceof APCO25Site)
+                        {
+                            IdentifierUpdateNotification apcoSiteNotification = new IdentifierUpdateNotification(apcoSystemIdent,
+                                    IdentifierUpdateNotification.Operation.ADD, timeslot);
+                            processingChain.getChannelState().updateChannelStateIdentifiers(apcoSiteNotification);
+                        }
+                        if(apcoSystemIdent instanceof APCO25Rfss)
+                        {
+                            IdentifierUpdateNotification apcoRfssNotification = new IdentifierUpdateNotification(apcoSystemIdent,
+                                    IdentifierUpdateNotification.Operation.ADD, timeslot);
+                            processingChain.getChannelState().updateChannelStateIdentifiers(apcoRfssNotification);
+                        }
+
+                        if(apcoSystemIdent instanceof APCO25System)
+                        {
+                            IdentifierUpdateNotification apcoSystemNotification = new IdentifierUpdateNotification(apcoSystemIdent,
+                                    IdentifierUpdateNotification.Operation.ADD, timeslot);
+                            processingChain.getChannelState().updateChannelStateIdentifiers(apcoSystemNotification);
+                        }
+                        if(apcoSystemIdent instanceof APCO25Wacn)
+                        {
+                            IdentifierUpdateNotification apcoWcanNotification = new IdentifierUpdateNotification(apcoSystemIdent,
+                                    IdentifierUpdateNotification.Operation.ADD, timeslot);
+                            processingChain.getChannelState().updateChannelStateIdentifiers(apcoWcanNotification);
+                        }
                     }
                 }
             }
