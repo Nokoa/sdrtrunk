@@ -229,7 +229,13 @@ public class P25P2DecoderState extends TimeslotDecoderState implements Identifie
             }
             else if(message instanceof AbstractVoiceTimeslot)
             {
-                if(isEncrypted())
+                boolean isMuted = mTrafficChannelManager.isTimeslotMuted(getCurrentFrequency(), getTimeslot());
+                // if we don't want the talkgroup don't set the slot state to call
+                if(isMuted)
+                {
+                    broadcast(new DecoderStateEvent(this, Event.CONTINUATION, State.ACTIVE, getTimeslot()));
+                }
+                else if(isEncrypted())
                 {
                     broadcast(new DecoderStateEvent(this, Event.CONTINUATION, State.ENCRYPTED, getTimeslot()));
                 }
@@ -253,7 +259,13 @@ public class P25P2DecoderState extends TimeslotDecoderState implements Identifie
                 getIdentifierCollection().update(message.getIdentifiers());
                 mTrafficChannelManager.processP2TrafficCurrentUser(getCurrentFrequency(), getTimeslot(), ess.getEncryptionKey(), ess.getTimestamp());
 
-                if(ess.isEncrypted())
+                boolean isMuted = mTrafficChannelManager.isTimeslotMuted(getCurrentFrequency(), getTimeslot());
+                // if we don't want the talkgroup don't set the slot state to call
+                if(isMuted)
+                {
+                    continueState(State.ACTIVE);
+                }
+                else if(ess.isEncrypted())
                 {
                     continueState(State.ENCRYPTED);
                 }
@@ -1121,7 +1133,13 @@ public class P25P2DecoderState extends TimeslotDecoderState implements Identifie
                     setCurrentChannel(currentChannel);
                 }
 
-                if(sop.getServiceOptions().isEncrypted())
+                boolean isMuted = mTrafficChannelManager.isTimeslotMuted(getCurrentFrequency(), getTimeslot());
+                //if muted set to active rather than call
+                if(isMuted)
+                {
+                    continueState(State.ACTIVE);
+                }
+                else if(sop.getServiceOptions().isEncrypted())
                 {
                     continueState(State.ENCRYPTED);
                 }
@@ -1165,7 +1183,18 @@ public class P25P2DecoderState extends TimeslotDecoderState implements Identifie
 
             mTrafficChannelManager.processP2TrafficVoice(getCurrentFrequency(), getTimeslot(), message.getTimestamp());
 
-            broadcast(new DecoderStateEvent(this, Event.START, ptt.isEncrypted() ? State.ENCRYPTED : State.CALL, getTimeslot()));
+            boolean isMuted = mTrafficChannelManager.isTimeslotMuted(getCurrentFrequency(), getTimeslot());
+
+            if (isMuted)
+            {
+                // It's an unwanted talkgroup. Broadcast ACTIVE to prevent audio path from opening.
+                broadcast(new DecoderStateEvent(this, Event.START, State.ACTIVE, getTimeslot()));
+            }
+            else
+            {
+                // It's a wanted talkgroup. Broadcast CALL/ENCRYPTED as normal.
+                broadcast(new DecoderStateEvent(this, Event.START, ptt.isEncrypted() ? State.ENCRYPTED : State.CALL, getTimeslot()));
+            }
         }
     }
 

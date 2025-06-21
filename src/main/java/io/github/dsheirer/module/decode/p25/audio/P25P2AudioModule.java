@@ -115,6 +115,12 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
     {
         if(message.getTimeslot() == getTimeslot())
         {
+            // if we don't want to monitor talkgroup then do not send to vocoder
+            if(!getAudioSegment().getAliasList().isTalkgroupAllowed(getIdentifierCollection().getToIdentifier()))
+            {
+                return;
+            }
+
             if(message instanceof AbstractVoiceTimeslot abstractVoiceTimeslot)
             {
                 if(mEncryptedCallStateEstablished)
