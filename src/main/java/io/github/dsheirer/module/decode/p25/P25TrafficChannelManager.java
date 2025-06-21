@@ -1218,6 +1218,26 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                                   IdentifierCollection ic, DecodeEventType decodeEventType,
                                                   boolean isDataChannelGrant, long timestamp, String context)
     {
+        if(ic instanceof MutableIdentifierCollection) {
+            // Add system identifiers from the captured broadcast messages
+            if (mTSBKNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getNAC());
+            } else if (mAMBTCNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getNAC());
+            }
+
+            if (mTSBKRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getSite());
+            } else if (mLCRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getSite());
+            }
+        }
         long frequency = apco25Channel.getDownlinkFrequency();
 
         P25TrafficChannelEventTracker tracker = getTrackerRemoveIfStale(frequency, P25P1Message.TIMESLOT_1, timestamp);
