@@ -211,7 +211,7 @@ public class P25P1DecoderState extends DecoderState implements IChannelEventList
         }
         else
         {
-            mTrafficChannelManager = new P25TrafficChannelManager(channel);
+            mTrafficChannelManager = new P25TrafficChannelManager(channel, null);
             //Do nothing with channel events if we're not configured to process traffic channels
             mChannelEventListener = channelEvent -> {};
         }
@@ -1759,6 +1759,8 @@ public class P25P1DecoderState extends DecoderState implements IChannelEventList
             case OSP_GROUP_VOICE_CHANNEL_GRANT_UPDATE:
                 if(tsbk instanceof GroupVoiceChannelGrantUpdate gvcgu)
                 {
+//                    LOGGER.debug("group voice channel grant update");
+
                     processControlAnnouncedTrafficUpdate(gvcgu.getChannelA(), null, Collections.singletonList(gvcgu.getGroupAddressA()),
                             tsbk.getOpcode(), gvcgu.getTimestamp(), tsbk.toString());
 
@@ -1772,6 +1774,8 @@ public class P25P1DecoderState extends DecoderState implements IChannelEventList
             case OSP_GROUP_VOICE_CHANNEL_GRANT_UPDATE_EXPLICIT:
                 if(tsbk instanceof GroupVoiceChannelGrantUpdateExplicit gvcgue)
                 {
+                    LOGGER.debug("group voice channel grant explicit");
+
                     processControlAnnouncedTrafficUpdate(gvcgue.getChannel(), gvcgue.getServiceOptions(), gvcgue.getIdentifiers(),
                             tsbk.getOpcode(), gvcgue.getTimestamp(), tsbk.toString());
                 }
@@ -1817,6 +1821,7 @@ public class P25P1DecoderState extends DecoderState implements IChannelEventList
             case OSP_GROUP_VOICE_CHANNEL_GRANT:
                 if(tsbk instanceof GroupVoiceChannelGrant gvcg)
                 {
+//                    LOGGER.debug("group voice channel grant");
                     processControlTrafficGrant(gvcg.getChannel(), gvcg.getServiceOptions(), gvcg.getIdentifiers(), tsbk.getOpcode(),
                             gvcg.getTimestamp(), tsbk.toString());
                 }

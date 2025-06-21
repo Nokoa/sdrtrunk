@@ -262,7 +262,7 @@ public class P25P2DecoderHDQPSK extends P25P2Decoder implements IdentifierUpdate
 
         AliasList aliasList = new AliasList("bogus");
         ProcessingChain processingChain = new ProcessingChain(channel, new AliasModel());
-        P25TrafficChannelManager trafficChannelManager = new P25TrafficChannelManager(channel);
+        P25TrafficChannelManager trafficChannelManager = new P25TrafficChannelManager(channel, aliasList);
         PatchGroupManager patchGroupManager = new PatchGroupManager();
         P25P2DecoderState ds1 = new P25P2DecoderState(channel, P25P2Message.TIMESLOT_1, trafficChannelManager,
                 patchGroupManager);

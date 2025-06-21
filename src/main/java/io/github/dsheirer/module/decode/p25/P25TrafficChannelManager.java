@@ -18,6 +18,10 @@
  */
 package io.github.dsheirer.module.decode.p25;
 
+import io.github.dsheirer.alias.Alias;
+import io.github.dsheirer.alias.AliasList;
+import io.github.dsheirer.alias.AliasModel;
+import io.github.dsheirer.alias.id.priority.Priority;
 import io.github.dsheirer.channel.IChannelDescriptor;
 import io.github.dsheirer.controller.channel.Channel;
 import io.github.dsheirer.controller.channel.Channel.ChannelType;
@@ -26,6 +30,7 @@ import io.github.dsheirer.controller.channel.ChannelEvent.Event;
 import io.github.dsheirer.controller.channel.IChannelEventListener;
 import io.github.dsheirer.controller.channel.IChannelEventProvider;
 import io.github.dsheirer.controller.channel.event.ChannelStartProcessingRequest;
+import io.github.dsheirer.identifier.Form;
 import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.identifier.MutableIdentifierCollection;
@@ -132,15 +137,18 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     //Used only for data calls
     private DecodeEventDuplicateDetector mDuplicateDetector = new DecodeEventDuplicateDetector();
     private TalkerAliasManager mTalkerAliasManager = new TalkerAliasManager();
+    private AliasList mAliasList;
+
 
 
     /**
      * Constructs an instance.
      * @param parentChannel (ie control channel) that owns this traffic channel manager
      */
-    public P25TrafficChannelManager(Channel parentChannel)
+    public P25TrafficChannelManager(Channel parentChannel, AliasList aliasList)
     {
         mParentChannel = parentChannel;
+        mAliasList = aliasList;
 
         if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase1 phase1)
         {
@@ -154,6 +162,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             createPhase1TrafficChannels(phase2.getTrafficChannelPoolSize(), new DecodeConfigP25Phase1());
             createPhase2TrafficChannels(phase2.getTrafficChannelPoolSize(), phase2);
         }
+    }
+
+    public AliasList getAliasList() {
+        return mAliasList;
     }
 
     /**
@@ -1207,6 +1219,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
      *
      * Note: this method is not thread safe and the calling method must protect access using mLock.
      *
+     * todo shahar: test phase 1 implementation with aliasAllowed parameter
+     *
      * @param apco25Channel for the traffic channel
      * @param serviceOptions for the traffic channel - optional can be null
      * @param ic associated with the channel grant
@@ -1218,6 +1232,9 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                                   IdentifierCollection ic, DecodeEventType decodeEventType,
                                                   boolean isDataChannelGrant, long timestamp, String context)
     {
+        boolean aliasAllowed = getAliasList() == null || getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
+
+
         if(ic instanceof MutableIdentifierCollection) {
             // Add system identifiers from the captured broadcast messages
             if (mTSBKNetworkStatusBroadcast != null) {
@@ -1268,7 +1285,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
-            if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant))
+            if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) && aliasAllowed)
             {
                 Channel trafficChannel = mAvailablePhase1TrafficChannelQueue.poll();
 
@@ -1313,6 +1330,24 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             return;
         }
 
+
+        if(!aliasAllowed)
+        {
+            if(tracker == null)
+            {
+                P25ChannelGrantEvent event = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                        .channelDescriptor(apco25Channel)
+                        .details("PHASE 1 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED)" + (serviceOptions != null ? serviceOptions : ""))
+                        .identifiers(ic)
+                        .build();
+                tracker = new P25TrafficChannelEventTracker(event);
+                addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
+                broadcast(tracker);
+            }
+
+            return;
+        }
+
         String details = isDataChannelGrant ? "PHASE 1 DATA CHANNEL GRANT " : "PHASE 1 CHANNEL GRANT " +
                 (serviceOptions != null ? serviceOptions : "");
 
@@ -1341,6 +1376,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         broadcast(tracker);
     }
 
+
     /**
      * Processes Phase 2 channel grants from both the control channel and from traffic channels to allocate traffic
      * channels and track overall channel usage.  Generates decode events for each new channel that is allocated.
@@ -1358,6 +1394,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                            IdentifierCollection ic, DecodeEventType decodeEventType,
                                            boolean isDataChannelGrant, long timestamp)
     {
+
+        // if no alias list assigned allow all talkgroups to decode, otherwise check if there is a point to decode them
+        boolean aliasAllowed = getAliasList() == null || getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
+
         if(  ic instanceof MutableIdentifierCollection)
         {
             if(mPhase2ScrambleParameters != null) {
@@ -1415,7 +1455,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
             if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) &&
-                (getCurrentControlFrequency() != frequency))
+                (getCurrentControlFrequency() != frequency) && aliasAllowed)
             {
                 Channel trafficChannel = mAvailablePhase2TrafficChannelQueue.poll();
 
@@ -1446,6 +1486,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             tracker = new P25TrafficChannelEventTracker(event);
             addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
+            broadcast(tracker);
+            return;
+        }
+
+        if(!aliasAllowed){
+            P25ChannelGrantEvent event = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                    .channelDescriptor(apco25Channel)
+                    .details("PHASE 2 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED)" + (serviceOptions != null ? serviceOptions : ""))
+                    .identifiers(ic)
+                    .timeslot(apco25Channel.getTimeslot())
+                    .build();
+
+            tracker = new P25TrafficChannelEventTracker(event);
+            addTracker(tracker, frequency, apco25Channel.getTimeslot());
             broadcast(tracker);
             return;
         }

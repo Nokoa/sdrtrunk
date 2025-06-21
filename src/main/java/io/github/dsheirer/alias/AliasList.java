@@ -583,6 +583,28 @@ public class AliasList
     }
 
     /**
+     *
+     * @param talkgroup the talkgroup or patchgroup to check against
+     * @return
+     */
+    public boolean isTalkgroupAllowed(Identifier talkgroup){
+        //Check if talkgroup is in the alias list and should be monitored at all
+
+        if(talkgroup != null)
+        {
+            List<Alias> aliases = getAliases(talkgroup);
+            for(Alias alias : aliases)
+            {
+                if(alias.isRecordable() || alias.isStreamable() || alias.getPlaybackPriority() != Priority.DO_NOT_MONITOR)
+                {
+                    return  true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Indicates if any of the aliases in this list have an associated alias action
      */
     public boolean hasAliasActions()
