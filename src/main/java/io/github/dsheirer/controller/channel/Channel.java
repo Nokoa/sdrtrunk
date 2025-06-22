@@ -91,6 +91,7 @@ public class Channel extends Configuration implements Listener<SourceEvent>
 
     private int mChannelID;
     private int mChannelFrequencyCorrection = 0;
+    private double mRssi = -140;
 
     /**
      * Channel represents a complete set of configurations needed to setup and
@@ -176,6 +177,10 @@ public class Channel extends Configuration implements Listener<SourceEvent>
         channel.setSourceConfiguration(SourceConfigFactory.copy(mSourceConfiguration));
 
         return channel;
+    }
+
+    public double getRssi() {
+        return mRssi;
     }
 
     /**
@@ -748,10 +753,11 @@ public class Channel extends Configuration implements Listener<SourceEvent>
     @Override
     public void receive(SourceEvent event)
     {
-        if(event.getEvent() == SourceEvent.Event.NOTIFICATION_CHANNEL_FREQUENCY_CORRECTION_CHANGE)
-        {
-            mChannelFrequencyCorrection = event.getValue().intValue();
+        switch (event.getEvent()){
+            case NOTIFICATION_CHANNEL_FREQUENCY_CORRECTION_CHANGE -> mChannelFrequencyCorrection = event.getValue().intValue();
+            case NOTIFICATION_CHANNEL_POWER -> mRssi = event.getValue().doubleValue();
         }
+
     }
 
     /**
