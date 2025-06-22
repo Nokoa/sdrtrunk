@@ -81,6 +81,8 @@ public class AliasList
     private boolean mHasAliasActions = false;
     private String mName;
     private ObservableList<Alias> mAliases = FXCollections.observableArrayList(Alias.extractor());
+    private final Map<Protocol, Set<Long>> mMonitoredTalkgroupsCache = new EnumMap<>(Protocol.class);
+
 
     /**
      * List of aliases where all aliases share the same list name.  Contains
@@ -109,6 +111,8 @@ public class AliasList
         if(alias != null)
         {
             alias.getAliasIdentifiers().stream().forEach(aliasID -> addAliasID(aliasID, alias));
+            updateCacheForAlias(alias);
+
         }
 
         if(alias.hasActions())
@@ -302,6 +306,18 @@ public class AliasList
      */
     public void removeAlias(Alias alias)
     {
+        for (AliasID aliasID : alias.getAliasIdentifiers())
+        {
+            if (aliasID instanceof Talkgroup talkgroup)
+            {
+                Set<Long> monitoredSet = mMonitoredTalkgroupsCache.get(talkgroup.getProtocol());
+                if (monitoredSet != null)
+                {
+                    monitoredSet.remove((long)talkgroup.getValue());
+                }
+            }
+        }
+
         //Note: because the alias' identifiers could have changed from when we initially added the alias, we have to
         //inspect every collection and map to remove the alias completely.
         mAliases.remove(alias);
@@ -537,6 +553,36 @@ public class AliasList
     }
 
     /**
+     * Updates the monitored talkgroup cache based on the provided alias's properties.
+     * This should be called whenever an alias is added or its properties change.
+     */
+    private void updateCacheForAlias(Alias alias)
+    {
+        boolean isMonitored = alias.isMonitored();
+
+        for (AliasID aliasID : alias.getAliasIdentifiers())
+        {
+            if (aliasID instanceof Talkgroup talkgroup)
+            {
+                Protocol protocol = talkgroup.getProtocol();
+                long talkgroupId = talkgroup.getValue();
+
+                // Get the cache for the specific protocol, creating it if it doesn't exist.
+                Set<Long> monitoredSet = mMonitoredTalkgroupsCache.computeIfAbsent(protocol, k -> new HashSet<>());
+
+                if (isMonitored)
+                {
+                    monitoredSet.add(talkgroupId);
+                }
+                else
+                {
+                    monitoredSet.remove(talkgroupId);
+                }
+            }
+        }
+    }
+
+    /**
      * Indicates if any of the identifiers contain a broadcast channel for streaming of audio.
      * @param identifierCollection to inspect
      * @return true if the identifier collection is designated for streaming to one or more channels.
@@ -583,24 +629,64 @@ public class AliasList
     }
 
     /**
+     * Checks if a talkgroup is allowed for monitoring based on its alias configuration.
+     * This method uses a cache for fast lookups of individual talkgroups and falls
+     * back to slower lookups for ranges and patch groups.
      *
-     * @param talkgroup the talkgroup or patchgroup to check against
-     * @return
+     * @param identifier the talkgroup or patchgroup to check.
+     * @return true if the talkgroup should be monitored, false otherwise.
      */
-    public boolean isTalkgroupAllowed(Identifier talkgroup){
-        //Check if talkgroup is in the alias list and should be monitored at all
-
-        if(talkgroup != null)
+    public boolean isTalkgroupAllowed(Identifier identifier)
+    {
+        if (identifier == null)
         {
-            List<Alias> aliases = getAliases(talkgroup);
-            for(Alias alias : aliases)
+            return false;
+        }
+
+        // Handle patch groups separately as they contain multiple identifiers.
+        if (identifier instanceof PatchGroupIdentifier patchGroupIdentifier)
+        {
+            // A patch is allowed if ANY of its constituent talkgroups or radios are allowed.
+            PatchGroup patchGroup = patchGroupIdentifier.getValue();
+
+            // Check the main patch group ID itself
+            if (isTalkgroupAllowed(patchGroup.getPatchGroup())) {
+                return true;
+            }
+
+            // Check all talkgroups within the patch
+            for (TalkgroupIdentifier patchedTalkgroup : patchGroup.getPatchedTalkgroupIdentifiers())
             {
-                if(alias.isRecordable() || alias.isStreamable() || alias.getPlaybackPriority() != Priority.DO_NOT_MONITOR)
+                if (isTalkgroupAllowed(patchedTalkgroup))
                 {
-                    return  true;
+                    return true;
+                }
+            }
+            // (The original method also checked radios, you can add that back if needed)
+            return false;
+        }
+
+        if (identifier instanceof TalkgroupIdentifier talkgroup)
+        {
+            // 1. Fast Path: Check the cache first (O(1) complexity).
+            Set<Long> monitoredSet = mMonitoredTalkgroupsCache.get(talkgroup.getProtocol());
+            if (monitoredSet != null && monitoredSet.contains(talkgroup.getValue()))
+            {
+                return true;
+            }
+
+            // 2. Slow Path (Fallback for ranges): If not in cache, check the alias for ranges.
+            TalkgroupAliasList talkgroupAliasList = mTalkgroupProtocolMap.get(talkgroup.getProtocol());
+            if (talkgroupAliasList != null)
+            {
+                Alias alias = talkgroupAliasList.getAlias(talkgroup);
+                if (alias != null && alias.isMonitored())
+                {
+                    return true;
                 }
             }
         }
+
         return false;
     }
 

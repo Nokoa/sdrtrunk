@@ -546,7 +546,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             }
 
             updateTimeslotMuteState(frequency, timeslot);
-            checkAndDisableChannelIfNeeded(frequency, timeslot, false);
+            checkAndDisableChannelIfNeeded(frequency);
         }
         finally
         {
@@ -723,62 +723,52 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         }
     }
 
-   /**
-    * Checks the talkgroups on both timeslots and disables the channel if neither
-    * are being monitored.
-    */
-    private void checkAndDisableChannelIfNeeded(long frequency, int currentTimeslot, boolean start)
-    {
+    /**
+     * Checks and disables a traffic channel if no monitored talkgroups are active.
+     * If both timeslot trackers are either null or complete, this method skips shutdown
+     * so that another process can handle it.
+     *
+     * @param frequency The frequency of the channel to check.
+     */
+    private void checkAndDisableChannelIfNeeded(long frequency) {
         mLock.lock();
         try {
-            String currentTG = null;
-            String otherTG = null;
-            // We only want to act on traffic channels, not the control channel
+            // Only act on traffic channels, not the control channel
             if (frequency == getCurrentControlFrequency()) {
                 return;
             }
 
-            // 1. Get the tracker for the timeslot that triggered the check
-            P25TrafficChannelEventTracker currentTracker = getTracker(frequency, currentTimeslot);
-            if (currentTracker != null && !currentTracker.isComplete()) {
-                Identifier currentTalkgroup = currentTracker.getEvent().getIdentifierCollection().getToIdentifier();
-                currentTG = currentTalkgroup.getValue().toString();
-                // 2. Assume you have a way to check if a talkgroup is monitored, likely on the parent channel's playlist.
-                // If the current talkgroup is monitored, we don't need to do anything.
-                if (currentTalkgroup != null && getAliasList().isTalkgroupAllowed(currentTalkgroup)) {
-                    return;
-                }
+            // Fetch both timeslot trackers only once
+            P25TrafficChannelEventTracker tracker1 = getTracker(frequency, 1);
+            P25TrafficChannelEventTracker tracker2 = getTracker(frequency, 2);
 
-            }
+            boolean tracker1Inactive = (tracker1 == null) || tracker1.isComplete();
+            boolean tracker2Inactive = (tracker2 == null) || tracker2.isComplete();
 
-            // 3. The current timeslot is not monitored. Check the OTHER timeslot.
-            int otherTimeslot = (currentTimeslot == P25P1Message.TIMESLOT_1) ? P25P1Message.TIMESLOT_2 : P25P1Message.TIMESLOT_1;
-            P25TrafficChannelEventTracker otherTracker = getTracker(frequency, otherTimeslot);
-
-            // If the other tracker exists and its talkgroup is monitored, do nothing.
-            if (otherTracker != null && !otherTracker.isComplete()) {
-                Identifier otherTalkgroup = otherTracker.getEvent().getIdentifierCollection().getToIdentifier();
-                otherTG =  otherTalkgroup.getValue().toString();
-                if (otherTalkgroup != null && getAliasList().isTalkgroupAllowed(otherTalkgroup)) {
-                    return;
-                }
-            }
-
-            // 4. If we get here, neither timeslot has a monitored talkgroup.
-            // Get the Channel object from the allocated map.
-            if(currentTracker == null && otherTracker == null)
+            // If both timeslot trackers are null or complete, skip disabling (handled elsewhere)
+            if (tracker1Inactive && tracker2Inactive) {
                 return;
-
-            Channel channelToDisable = mAllocatedTrafficChannelMap.get(frequency);
-            mLog.debug("Slot " + currentTimeslot + " TGID " + currentTG + " Active? " + (currentTracker != null && !currentTracker.isComplete()) + "  Slot " + otherTimeslot + " TGID " + otherTG + " Active? " + (otherTracker != null && !otherTracker.isComplete()));
-
-            mLog.debug("Talkgroup not allowed disabling channel... Channel start? " + start);
-            if (channelToDisable != null) {
-                // Found the channel, request to disable it.
-                // The TrafficChannelTeardownMonitor will handle cleanup.
-                broadcast(new ChannelEvent(channelToDisable, Event.REQUEST_DISABLE));
-                mLog.debug("Sent disable to " + frequency);
             }
+
+            // Check for an active, monitored talkgroup on either timeslot
+            for (P25TrafficChannelEventTracker tracker : new P25TrafficChannelEventTracker[]{tracker1, tracker2}) {
+                if (tracker != null && !tracker.isComplete()) {
+                    Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
+                    if (getAliasList().isTalkgroupAllowed(talkgroup)) {
+                        // Found an active, monitored talkgroup; keep the channel
+                        return;
+                    }
+                }
+            }
+
+            // If no active, monitored talkgroup found, disable the channel
+            Channel channelToDisable = mAllocatedTrafficChannelMap.get(frequency);
+            if (channelToDisable != null) {
+//                mLog.debug("Disabling channel on frequency {} as no monitored talkgroups are active.", frequency);
+                broadcast(new ChannelEvent(channelToDisable, Event.REQUEST_DISABLE));
+            }
+        } catch (Exception e) {
+            mLog.error("Exception while checking/disabling channel for frequency {}: {}", frequency, e.getMessage(), e);
         } finally {
             mLock.unlock();
         }
@@ -824,7 +814,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
                 updateTimeslotMuteState(frequency, timeslot);
 
-                checkAndDisableChannelIfNeeded(frequency, timeslot, true);
+                checkAndDisableChannelIfNeeded(frequency);
 
                 return tracker.getEvent().getChannelDescriptor();
             }
@@ -845,7 +835,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             updateTimeslotMuteState(frequency, timeslot);
 
 
-            checkAndDisableChannelIfNeeded(frequency, timeslot, true);
+            checkAndDisableChannelIfNeeded(frequency);
 
             return null;
         }

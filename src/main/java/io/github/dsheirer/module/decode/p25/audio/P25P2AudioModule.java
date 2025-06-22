@@ -25,6 +25,7 @@ import io.github.dsheirer.audio.codec.mbe.AmbeAudioModule;
 import io.github.dsheirer.audio.squelch.SquelchState;
 import io.github.dsheirer.audio.squelch.SquelchStateEvent;
 import io.github.dsheirer.bits.BinaryMessage;
+import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierUpdateNotification;
 import io.github.dsheirer.identifier.IdentifierUpdateProvider;
 import io.github.dsheirer.identifier.Role;
@@ -44,17 +45,19 @@ import io.github.dsheirer.module.decode.p25.phase2.timeslot.AbstractVoiceTimeslo
 import io.github.dsheirer.preference.UserPreferences;
 import io.github.dsheirer.protocol.Protocol;
 import io.github.dsheirer.sample.Listener;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import jmbe.iface.IAudioWithMetadata;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class P25P2AudioModule extends AmbeVocoderAudioModule implements IdentifierUpdateProvider, IMessageProvider
-{
+public class P25P2AudioModule extends AmbeVocoderAudioModule implements IdentifierUpdateProvider, IMessageProvider {
     private final static Logger mLog = LoggerFactory.getLogger(P25P2AudioModule.class);
 
     private Listener<IdentifierUpdateNotification> mIdentifierUpdateNotificationListener;
@@ -64,15 +67,14 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
     private boolean mEncryptedCallStateEstablished = false;
     private boolean mEncryptedCall = false;
     private Listener<IMessage> mMessageListener;
+    private Boolean talkgroupAllowed;
 
-    public P25P2AudioModule(UserPreferences userPreferences, int timeslot, AliasList aliasList)
-    {
+    public P25P2AudioModule(UserPreferences userPreferences, int timeslot, AliasList aliasList) {
         super(userPreferences, aliasList, timeslot);
     }
 
     @Override
-    public Listener<SquelchStateEvent> getSquelchStateListener()
-    {
+    public Listener<SquelchStateEvent> getSquelchStateListener() {
         return mSquelchStateListener;
     }
 
@@ -81,8 +83,7 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
      * controlled by the squelch state listener and squelch state is controlled by the P25P2DecoderState.
      */
     @Override
-    public void reset()
-    {
+    public void reset() {
         //Explicitly clear FROM identifiers to ensure previous call TONE identifiers are cleared.
         mIdentifierCollection.remove(Role.FROM);
 
@@ -92,18 +93,26 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
         //Reset encrypted call handling flags
         mEncryptedCallStateEstablished = false;
         mEncryptedCall = false;
+        talkgroupAllowed = null;
     }
 
     @Override
-    public void start()
-    {
+    public void start() {
         super.start();
         reset();
     }
 
+    private boolean isTalkgroupAllowed() {
+        if (talkgroupAllowed == null)
+        {
+            talkgroupAllowed = getAudioSegment().getAliasList().isTalkgroupAllowed(getIdentifierCollection().getToIdentifier());
+        }
+        return talkgroupAllowed;
+    }
+
     /**
      * Primary message processing method for processing voice timeslots and Push-To-Talk MAC messages
-     *
+     * <p>
      * Audio timeslots are temporarily queued until a determination of the encrypted state of the call is determined
      * and then all queued audio is processed through to the end of the call.  Encryption state is determined either
      * by the PTT MAC message or by processing the ESS fragments from the Voice2 and Voice4 timeslots.
@@ -111,51 +120,38 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
      * @param message to process
      */
     @Override
-    public void receive(IMessage message)
-    {
-        if(message.getTimeslot() == getTimeslot())
-        {
+    public void receive(IMessage message) {
+        if (message.getTimeslot() == getTimeslot()) {
             // if we don't want to monitor talkgroup then do not send to vocoder
-            if(!getAudioSegment().getAliasList().isTalkgroupAllowed(getIdentifierCollection().getToIdentifier()))
-            {
+            if (!isTalkgroupAllowed()) {
                 return;
             }
 
-            if(message instanceof AbstractVoiceTimeslot abstractVoiceTimeslot)
-            {
-                if(mEncryptedCallStateEstablished)
-                {
-                    if(!mEncryptedCall)
-                    {
-                        for(BinaryMessage binaryMessage : abstractVoiceTimeslot.getVoiceFrames()){
+            if (message instanceof AbstractVoiceTimeslot abstractVoiceTimeslot) {
+                if (mEncryptedCallStateEstablished) {
+                    if (!mEncryptedCall) {
+                        for (BinaryMessage binaryMessage : abstractVoiceTimeslot.getVoiceFrames()) {
 
                             processAmbeFrame(binaryMessage.getBytes(), message.getTimestamp());
                         }
                     }
-                }
-                else
-                {
+                } else {
                     //Queue audio timeslots until we can determine if the audio is encrypted or not
                     mQueuedAudioTimeslots.offer(abstractVoiceTimeslot);
                 }
-            }
-            else if(message instanceof MacMessage macMessage && message.isValid())
-            {
+            } else if (message instanceof MacMessage macMessage && message.isValid()) {
                 MacStructure macStructure = macMessage.getMacStructure();
 
-                if(macStructure instanceof PushToTalk pushToTalk)
-                {
+                if (macStructure instanceof PushToTalk pushToTalk) {
                     mEncryptedCallStateEstablished = true;
                     mEncryptedCall = pushToTalk.isEncrypted();
                     //There should not be any pending voice timeslots to process since the PTT message is the first in
                     //the audio call sequence.
                     clearPendingVoiceTimeslots();
                 }
-            }
-            else if(message instanceof EncryptionSynchronizationSequence && message.isValid())
-            {
+            } else if (message instanceof EncryptionSynchronizationSequence && message.isValid()) {
                 mEncryptedCallStateEstablished = true;
-                mEncryptedCall = ((EncryptionSynchronizationSequence)message).isEncrypted();
+                mEncryptedCall = ((EncryptionSynchronizationSequence) message).isEncrypted();
                 processPendingVoiceTimeslots();
             }
         }
@@ -164,12 +160,10 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
     /**
      * Drains and processes any audio timeslots that have been queued pending determination of encrypted call status
      */
-    private void processPendingVoiceTimeslots()
-    {
+    private void processPendingVoiceTimeslots() {
         AbstractVoiceTimeslot timeslot = mQueuedAudioTimeslots.poll();
 
-        while(timeslot != null)
-        {
+        while (timeslot != null) {
             receive(timeslot);
             timeslot = mQueuedAudioTimeslots.poll();
         }
@@ -178,22 +172,16 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
     /**
      * Clears/deletes any pending voice timeslots
      */
-    private void clearPendingVoiceTimeslots()
-    {
+    private void clearPendingVoiceTimeslots() {
         mQueuedAudioTimeslots.clear();
     }
-
-
-
-
 
 
     /**
      * Registers the listener to receive identifier updates
      */
     @Override
-    public void setIdentifierUpdateListener(Listener<IdentifierUpdateNotification> listener)
-    {
+    public void setIdentifierUpdateListener(Listener<IdentifierUpdateNotification> listener) {
         mIdentifierUpdateNotificationListener = listener;
     }
 
@@ -201,18 +189,17 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
      * Unregisters a listener from receiving identifier updates
      */
     @Override
-    public void removeIdentifierUpdateListener()
-    {
+    public void removeIdentifierUpdateListener() {
         mIdentifierUpdateNotificationListener = null;
     }
 
     /**
      * Registers a message listener to receive AMBE tone identifier messages.
+     *
      * @param listener to register
      */
     @Override
-    public void setMessageListener(Listener<IMessage> listener)
-    {
+    public void setMessageListener(Listener<IMessage> listener) {
         mMessageListener = listener;
     }
 
@@ -220,8 +207,7 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
      * Removes the message listener
      */
     @Override
-    public void removeMessageListener()
-    {
+    public void removeMessageListener() {
         mMessageListener = null;
     }
 
@@ -230,41 +216,36 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
      * provide a list of each unique tone and a time duration (milliseconds) for the tone.  Tones are concatenated into
      * a comma separated list and included as call segment metadata.
      */
-    public class ToneMetadataProcessor
-    {
+    public class ToneMetadataProcessor {
         private List<Tone> mTones = new ArrayList<>();
         private Tone mCurrentTone;
 
         /**
          * Resets or clears any accumulated call tone sequences to prepare for the next call.
          */
-        public void reset()
-        {
+        public void reset() {
             mTones.clear();
         }
 
         /**
          * Process the tone metadata
-         * @param type of tone
+         *
+         * @param type  of tone
          * @param value of tone
          * @return an identifier with the accumulated tone metadata set
          */
-        public ToneIdentifier process(String type, String value)
-        {
-            if(type == null || value == null)
-            {
+        public ToneIdentifier process(String type, String value) {
+            if (type == null || value == null) {
                 return null;
             }
 
             AmbeTone tone = AmbeTone.fromValues(type, value);
 
-            if(tone == AmbeTone.INVALID)
-            {
+            if (tone == AmbeTone.INVALID) {
                 return null;
             }
 
-            if(mCurrentTone == null || mCurrentTone.getAmbeTone() != tone)
-            {
+            if (mCurrentTone == null || mCurrentTone.getAmbeTone() != tone) {
                 mCurrentTone = new Tone(tone);
                 mTones.add(mCurrentTone);
             }
@@ -277,8 +258,7 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
         /**
          * Closes current tone metadata when there is no metadata for the current audio frame.
          */
-        public void closeMetadata()
-        {
+        public void closeMetadata() {
             mCurrentTone = null;
         }
     }
@@ -288,15 +268,11 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
      * flag is reset so that the encrypted audio state for the next call can be properly detected and we send an
      * END audio packet so that downstream processors like the audio recorder can properly close out a call sequence.
      */
-    public class SquelchStateListener implements Listener<SquelchStateEvent>
-    {
+    public class SquelchStateListener implements Listener<SquelchStateEvent> {
         @Override
-        public void receive(SquelchStateEvent event)
-        {
-            if(event.getTimeslot() == getTimeslot())
-            {
-                if(event.getSquelchState() == SquelchState.SQUELCH)
-                {
+        public void receive(SquelchStateEvent event) {
+            if (event.getTimeslot() == getTimeslot()) {
+                if (event.getSquelchState() == SquelchState.SQUELCH) {
                     closeAudioSegment();
                     reset();
                 }
