@@ -47,28 +47,26 @@ public class DuplicateCallManager {
         String callKey = createCallKey(systemId, talkgroupId);
         ActiveCall newCall = new ActiveCall(siteId, rssi);
 
-        // --- NEW LOGIC: Check if this site already holds the lock ---
-        ActiveCall existingCall = mActiveCalls.get(callKey);
-        if (existingCall != null && !existingCall.isStale() && existingCall.getSiteId().equals(siteId)) {
-            // This site is already the winner. Refresh its timestamp/RSSI and confirm.
-            mActiveCalls.put(callKey, newCall);
-            return true;
-        }
-        // --- END NEW LOGIC ---
-
-        // Atomically check the existing call and decide if the new one should take over.
         ActiveCall winningCall = mActiveCalls.compute(callKey, (key, currentHolder) -> {
+            // Case 1: No current holder or the holder is stale. The new call wins.
             if (currentHolder == null || currentHolder.isStale()) {
                 mLog.trace("No active call for {}, new call from site {} wins.", key, siteId);
                 return newCall;
             }
 
+            // Case 2: This site is already the winner. Refresh its entry with the latest RSSI and timestamp.
+            if (currentHolder.getSiteId().equals(siteId)) {
+                return newCall;
+            }
+
+            // Case 3: A different site is the winner. Compare RSSI to see if we should take over.
             if (rssi > currentHolder.getRssi() + RSSI_HYSTERESIS_DB) {
                 mLog.trace("New call for {} from site {} (RSSI: {}) is stronger than existing from site {} (RSSI: {}). Switching.",
                         key, siteId, rssi, currentHolder.getSiteId(), currentHolder.getRssi());
                 return newCall;
             }
 
+            // Case 4: A different site is stronger. It remains the winner. Do not update its timestamp.
             mLog.trace("Existing call for {} from site {} (RSSI: {}) is stronger. Ignoring new call from site {} (RSSI: {}).",
                     key, currentHolder.getSiteId(), currentHolder.getRssi(), siteId, rssi);
             return currentHolder;
@@ -88,7 +86,14 @@ public class DuplicateCallManager {
     public boolean isWinningSite(String systemId, long talkgroupId, String siteId) {
         String callKey = createCallKey(systemId, talkgroupId);
         ActiveCall winningCall = mActiveCalls.get(callKey);
-        return winningCall != null && !winningCall.isStale() && winningCall.getSiteId().equals(siteId);
+
+        if (winningCall != null && !winningCall.isStale() && winningCall.getSiteId().equals(siteId)) {
+            // The site is currently winning. Refresh the timestamp to prevent it from becoming stale.
+            winningCall.timestamp = System.currentTimeMillis();
+            return true;
+        }
+
+        return false;
     }
 
     public void releaseCall(String systemId, long talkgroupId, String siteId) {
@@ -103,10 +108,11 @@ public class DuplicateCallManager {
         });
     }
 
+
     private static class ActiveCall {
         private final String siteId;
         private final double rssi;
-        private final long timestamp;
+        private  long timestamp;
 
         ActiveCall(String siteId, double rssi) {
             this.siteId = siteId;

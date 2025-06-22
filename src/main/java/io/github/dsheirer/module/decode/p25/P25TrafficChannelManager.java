@@ -187,6 +187,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         Identifier tg = tracker.getEvent().getIdentifierCollection().getToIdentifier();
         boolean isMonitored = (tracker != null && !tracker.isComplete() &&
                 getAliasList().isTalkgroupAllowed(tg));
+        mLog.debug("updateTimeslotMuteState() frequency: {}, timeslot: {} talkgroup {} isMonitored: {}", frequency, timeslot, tg.getValue(), isMonitored);
 
         // ** START DUPLICATE CALL CHECK ** //todo will not work for patch groups
         if(isMonitored) {
@@ -509,6 +510,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
      */
     public boolean processP2TrafficCallEnd(long frequency, int timeslot, long timestamp, String context)
     {
+        mLog.debug("processP2TrafficCallEnd() frequency: {}, timeslot: {}, timestamp: {}, context: {}",
+                frequency, timeslot, timestamp, context);
         boolean completed = false;
 
         mLock.lock();
@@ -522,6 +525,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             {
                 completed = true;
                 broadcast(tracker);
+                // ** START DUPLICATE CALL RELEASE **
+
+                mLog.debug("processP2TrafficCallEnd() Attempting to release duplicate call for frequency: {}, timeslot: {}, timestamp: {}, context: {}",
+                        frequency, timeslot, timestamp, context);
+                Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
+                if(talkgroup instanceof TalkgroupIdentifier) {
+                    String systemId = mParentChannel.getSystem();
+                    String siteId = mParentChannel.getSite();
+                    long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                    DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
+                }
+
+                // ** END DUPLICATE CALL RELEASE **
+
             }
         }
         finally
@@ -544,6 +561,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
      */
     public boolean processP2TrafficEndPushToTalk(long frequency, int timeslot, long timestamp, String context)
     {
+        mLog.debug("processP2TrafficEndPushToTalk() frequency: {}, timeslot: {}, timestamp: {}, context: {}",
+                frequency, timeslot, timestamp, context);
         boolean completed = false;
 
         mLock.lock();
@@ -551,28 +570,32 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         try
         {
             P25TrafficChannelEventTracker tracker = getTracker(frequency, timeslot);
-
-            // ** START DUPLICATE CALL RELEASE **
-            if(tracker != null ) {
-                Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
-                if(talkgroup instanceof TalkgroupIdentifier) {
-                    String systemId = mParentChannel.getSystem();
-                    String siteId = mParentChannel.getSite();
-                    long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
-                    DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
-                }
-            }
-            // ** END DUPLICATE CALL RELEASE **
-
             //If we have a tracker that is started that we can mark complete, broadcast the updated tracker/event.
             if(tracker != null && tracker.isStarted() && tracker.completeTraffic(timestamp))
             {
                 completed = true;
                 broadcast(tracker);
+                // ** START DUPLICATE CALL RELEASE **
+
+                mLog.debug("Attempting to release duplicate call for frequency: {}, timeslot: {}, timestamp: {}, context: {}",
+                        frequency, timeslot, timestamp, context);
+                    Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
+                    if(talkgroup instanceof TalkgroupIdentifier) {
+                        String systemId = mParentChannel.getSystem();
+                        String siteId = mParentChannel.getSite();
+                        long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                        DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
+                    }
+
+                // ** END DUPLICATE CALL RELEASE **
+                updateTimeslotMuteState(frequency, timeslot);
+                checkAndDisableChannelIfNeeded(frequency);
+            }else{
+                mLog.debug("Unable to release duplicate call for frequency: {}, timeslot: {}, timestamp: {}, context: {}. Tracker is null or not started.",
+                        frequency, timeslot, timestamp, context);
             }
 
-            updateTimeslotMuteState(frequency, timeslot);
-            checkAndDisableChannelIfNeeded(frequency);
+
         }
         finally
         {
@@ -614,8 +637,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             {
                 tracker.addIdentifierIfMissing(identifier);
                 tracker.updateDurationTraffic(timestamp);
-                broadcast(tracker);
-            }
+                broadcast(tracker);}
         }
         finally
         {
@@ -893,10 +915,6 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 tracker.addChannelDescriptorIfMissing(channelDescriptor);
                 broadcast(tracker);
 
-                updateTimeslotMuteState(frequency, timeslot);
-
-                checkAndDisableChannelIfNeeded(frequency);
-
                 return tracker.getEvent().getChannelDescriptor();
             }
 
@@ -913,6 +931,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             addTracker(tracker, frequency, timeslot);
             broadcast(tracker);
 
+            mLog.debug("processP2TrafficCurrentUser() Calling updateTimeSlotMuteState() and checkAndDisableChannel if needed for frequency: {}, timeslot: {} talkgroups: {}",
+                    frequency, timeslot, ic.getToIdentifier().getValue());
             updateTimeslotMuteState(frequency, timeslot);
             checkAndDisableChannelIfNeeded(frequency);
 
@@ -1342,6 +1362,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             {
                 completed = true;
                 broadcast(tracker);
+
             }
         }
         finally
@@ -1434,7 +1455,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 double rssi = mParentChannel.getRssi();
 
                 aliasAllowed = DuplicateCallManager.getInstance().acquireCall(systemId, talkgroupIdValue, siteId, rssi);
-                mLog.debug("Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
+                mLog.debug("processPhase1ControlChannelGrant() Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
             }
         }
 
@@ -1578,6 +1599,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         }
 
         broadcast(tracker);
+        updateTimeslotMuteState(frequency, P25P1Message.TIMESLOT_1);
+
     }
 
 
@@ -1628,6 +1651,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             }
         }
 
+        String reason = "IGNORED (ALIAS NOT ALLOWED) ";
         int timeslot = apco25Channel.getTimeslot();
         long frequency = apco25Channel.getDownlinkFrequency();
         ic.setTimeslot(timeslot);
@@ -1642,7 +1666,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 double rssi = mParentChannel.getRssi();
 
                 aliasAllowed = DuplicateCallManager.getInstance().acquireCall(systemId, talkgroupIdValue, siteId, rssi);
-                mLog.debug("Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
+                if(!aliasAllowed){
+                    reason = "IGNORED (BETTER SITE AVAILABLE) ";
+                }
+                mLog.debug("processPhase2ChannelGrant() Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
             }
         }
             P25TrafficChannelEventTracker tracker = getTrackerRemoveIfStale(apco25Channel, timestamp);
@@ -1665,12 +1692,14 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
                     addTracker(tracker, frequency, timeslot);
                     broadcast(tracker);
+                    updateTimeslotMuteState(frequency, timeslot);
+
                 }
                 else
                 {
                     P25ChannelGrantEvent continuationGrantEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
                             .channelDescriptor(apco25Channel)
-                            .details("CONTINUE - PHASE 2 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED) " + (serviceOptions != null ? serviceOptions : ""))
+                            .details("CONTINUE - PHASE 2 CHANNEL GRANT " + reason +  (serviceOptions != null ? serviceOptions : ""))
                             .identifiers(ic)
                             .timeslot(apco25Channel.getTimeslot())
                             .build();
@@ -1678,6 +1707,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
                     addTracker(tracker, frequency, timeslot);
                     broadcast(tracker);
+                    updateTimeslotMuteState(frequency, timeslot);
+
                 }
             }
 
@@ -1697,6 +1728,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     tracker.setDetails("PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""));
                     tracker.addChannelDescriptorIfMissing(apco25Channel);
                     broadcast(tracker);
+                    updateTimeslotMuteState(frequency, timeslot);
                     requestTrafficChannelStart(trafficChannel, apco25Channel, ic, timestamp);
                 }
                 else
@@ -1734,6 +1766,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             tracker = new P25TrafficChannelEventTracker(event);
             addTracker(tracker, frequency, apco25Channel.getTimeslot());
             broadcast(tracker);
+            updateTimeslotMuteState(frequency, timeslot);
             return;
         }
 
@@ -1763,6 +1796,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         }
 
         broadcast(tracker);
+        updateTimeslotMuteState(frequency, timeslot);
+
     }
 
     /**
@@ -2088,6 +2123,28 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                     .map(Map.Entry::getKey)
                                     .findFirst()
                                     .ifPresent(frequency -> {
+                                        P25TrafficChannelEventTracker tracker1 = getTracker(frequency, P25P1Message.TIMESLOT_1);
+                                        if (tracker1 != null) {
+                                            Identifier talkgroup = tracker1.getEvent().getIdentifierCollection().getToIdentifier();
+                                            if (talkgroup instanceof TalkgroupIdentifier) {
+                                                String systemId = mParentChannel.getSystem();
+                                                String siteId = mParentChannel.getSite();
+                                                long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                                                // Release the call from the duplicate manager
+                                                DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
+                                                mLog.debug("Teardown monitor releasing duplicate call lock for TG {} on Site {}", talkgroupIdValue, siteId);
+                                            }                                        }
+                                        P25TrafficChannelEventTracker tracker2 = getTracker(frequency, P25P1Message.TIMESLOT_2);
+                                        if (tracker2 != null) {
+                                            Identifier talkgroup = tracker2.getEvent().getIdentifierCollection().getToIdentifier();
+                                            if (talkgroup instanceof TalkgroupIdentifier) {
+                                                String systemId = mParentChannel.getSystem();
+                                                String siteId = mParentChannel.getSite();
+                                                long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                                                // Release the call from the duplicate manager
+                                                DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
+                                                mLog.debug("Teardown monitor releasing duplicate call lock for TG {} on Site {}", talkgroupIdValue, siteId);
+                                            }                                             }
                                         mAllocatedTrafficChannelMap.remove(frequency);
                                         removeTracker(frequency, P25P1Message.TIMESLOT_1);
                                         mAvailablePhase1TrafficChannelQueue.add(channel);
