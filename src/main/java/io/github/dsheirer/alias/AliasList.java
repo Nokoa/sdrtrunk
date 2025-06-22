@@ -643,6 +643,12 @@ public class AliasList
             return false;
         }
 
+        if(mName == null || mName.isEmpty())
+        {
+            // If the alias list has no name, it is not configured for monitoring.
+            return true;
+        }
+
         // Handle patch groups separately as they contain multiple identifiers.
         if (identifier instanceof PatchGroupIdentifier patchGroupIdentifier)
         {
