@@ -188,6 +188,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         boolean isMonitored = (tracker != null && !tracker.isComplete() &&
                 getAliasList().isTalkgroupAllowed(tg));
 
+        // ** START DUPLICATE CALL CHECK ** //todo will not work for patch groups
+        if(isMonitored) {
+            if (tg instanceof TalkgroupIdentifier) {
+                String systemId = mParentChannel.getSystem();
+                String siteId = mParentChannel.getSite();
+                long talkgroupIdValue = ((TalkgroupIdentifier) tg).getValue();
+
+                isMonitored = DuplicateCallManager.getInstance().isWinningSite(systemId, talkgroupIdValue, siteId);
+                mLog.debug("updateTimeslotMuteState() Checking if duplicate call is active in traffic channel manager for talkgroup: {} on system: {} and site: {}. Is monitored: {} frequency: {} timeslot: {}",
+                        tg.getValue(), systemId, siteId, isMonitored, frequency, timeslot);
+
+            }
+        }
+
         Set<Integer> mutedSlots = mTimeslotsToMute.computeIfAbsent(frequency, k -> ConcurrentHashMap.newKeySet());
 
         if(tracker == null || tracker.isComplete()){
@@ -538,6 +552,18 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         {
             P25TrafficChannelEventTracker tracker = getTracker(frequency, timeslot);
 
+            // ** START DUPLICATE CALL RELEASE **
+            if(tracker != null ) {
+                Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
+                if(talkgroup instanceof TalkgroupIdentifier) {
+                    String systemId = mParentChannel.getSystem();
+                    String siteId = mParentChannel.getSite();
+                    long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                    DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
+                }
+            }
+            // ** END DUPLICATE CALL RELEASE **
+
             //If we have a tracker that is started that we can mark complete, broadcast the updated tracker/event.
             if(tracker != null && tracker.isStarted() && tracker.completeTraffic(timestamp))
             {
@@ -724,52 +750,107 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     }
 
     /**
-     * Checks and disables a traffic channel if no monitored talkgroups are active.
-     * If both timeslot trackers are either null or complete, this method skips shutdown
-     * so that another process can handle it.
+     * Checks talkgroups on both timeslots and disables the channel if it's active
+     * but contains only unmonitored or non-winning duplicate calls.
      *
-     * @param frequency The frequency of the channel to check.
+     * If the channel is completely idle (no active trackers), this method does nothing,
+     * allowing the standard sdr-trunk teardown process to manage the channel.
      */
-    private void checkAndDisableChannelIfNeeded(long frequency) {
+    private void checkAndDisableChannelIfNeeded(long frequency)
+    {
         mLock.lock();
-        try {
-            // Only act on traffic channels, not the control channel
-            if (frequency == getCurrentControlFrequency()) {
+        try
+        {
+            if (frequency == getCurrentControlFrequency())
+            {
                 return;
             }
 
-            // Fetch both timeslot trackers only once
-            P25TrafficChannelEventTracker tracker1 = getTracker(frequency, 1);
-            P25TrafficChannelEventTracker tracker2 = getTracker(frequency, 2);
+            P25TrafficChannelEventTracker tracker1 = getTracker(frequency, P25P1Message.TIMESLOT_1);
+            P25TrafficChannelEventTracker tracker2 = getTracker(frequency, P25P1Message.TIMESLOT_2);
 
-            boolean tracker1Inactive = (tracker1 == null) || tracker1.isComplete();
-            boolean tracker2Inactive = (tracker2 == null) || tracker2.isComplete();
+            boolean isTs1Active = (tracker1 != null && !tracker1.isComplete());
+            boolean isTs2Active = (tracker2 != null && !tracker2.isComplete());
 
-            // If both timeslot trackers are null or complete, skip disabling (handled elsewhere)
-            if (tracker1Inactive && tracker2Inactive) {
+            // If both timeslots are inactive (no calls), do nothing. Let the standard
+            // traffic channel teardown monitor handle the channel timeout.
+            if (!isTs1Active && !isTs2Active)
+            {
                 return;
             }
 
-            // Check for an active, monitored talkgroup on either timeslot
-            for (P25TrafficChannelEventTracker tracker : new P25TrafficChannelEventTracker[]{tracker1, tracker2}) {
-                if (tracker != null && !tracker.isComplete()) {
-                    Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
-                    if (getAliasList().isTalkgroupAllowed(talkgroup)) {
-                        // Found an active, monitored talkgroup; keep the channel
-                        return;
+            // If we reach here, at least one timeslot has an active call.
+            // We now check if any of the active calls justify keeping the channel open.
+            boolean shouldKeepChannelActive = false;
+
+            // Check timeslot 1 if it's active
+            String systemId = mParentChannel.getSystem();
+            String siteId = mParentChannel.getSite();
+            if (isTs1Active)
+            {
+                Identifier talkgroupIdentifier = tracker1.getEvent().getIdentifierCollection().getToIdentifier();
+                boolean isMonitored = getAliasList().isTalkgroupAllowed(talkgroupIdentifier);
+
+                if (isMonitored && talkgroupIdentifier instanceof TalkgroupIdentifier)
+                {
+
+                    long talkgroupIdValue = ((TalkgroupIdentifier) talkgroupIdentifier).getValue();
+
+                    boolean isWinningSite = DuplicateCallManager.getInstance().isWinningSite(systemId, talkgroupIdValue, siteId);
+
+                    if (isWinningSite)
+                    {
+                        shouldKeepChannelActive = true;
+                    }else{
+                        mLog.error("checkAndDisableChannelIfNeeded() Talkgroup {} is not a winning site for frequency: {} and timeslot 1. Identifier: {}", talkgroupIdentifier.getValue(), frequency, talkgroupIdentifier.debug());
                     }
+                }
+                if(!(talkgroupIdentifier instanceof  TalkgroupIdentifier))
+                {
+                    mLog.error("checkAndDisableChannelIfNeeded() Talkgroup identifier is not an instance of TalkgroupIdentifier for frequency: {} and timeslot 1. Identifier: {}", frequency, talkgroupIdentifier.debug());
                 }
             }
 
-            // If no active, monitored talkgroup found, disable the channel
-            Channel channelToDisable = mAllocatedTrafficChannelMap.get(frequency);
-            if (channelToDisable != null) {
-//                mLog.debug("Disabling channel on frequency {} as no monitored talkgroups are active.", frequency);
-                broadcast(new ChannelEvent(channelToDisable, Event.REQUEST_DISABLE));
+            // If we don't already have a reason to keep the channel, check timeslot 2 if it's active
+            if (!shouldKeepChannelActive && isTs2Active)
+            {
+                Identifier talkgroupIdentifier = tracker2.getEvent().getIdentifierCollection().getToIdentifier();
+                boolean isMonitored = getAliasList().isTalkgroupAllowed(talkgroupIdentifier);
+
+                if (isMonitored && talkgroupIdentifier instanceof TalkgroupIdentifier)
+                {
+
+                    long talkgroupIdValue = ((TalkgroupIdentifier) talkgroupIdentifier).getValue();
+
+                    boolean isWinningSite = DuplicateCallManager.getInstance().isWinningSite(systemId, talkgroupIdValue, siteId);
+
+                    if (isWinningSite)
+                    {
+                        shouldKeepChannelActive = true;
+                    }else{
+                        mLog.error("checkAndDisableChannelIfNeeded() Talkgroup {} is not a winning site for frequency: {} and timeslot 2. System: {}, Site: {}", talkgroupIdentifier.getValue(), frequency, systemId, siteId);
+                    }
+                }
+                if(!(talkgroupIdentifier instanceof  TalkgroupIdentifier))
+                {
+                    mLog.error("checkAndDisableChannelIfNeeded() Talkgroup identifier is not an instance of TalkgroupIdentifier for frequency: {} and timeslot 1. Identifier: {}", frequency, talkgroupIdentifier.debug());
+                }
             }
-        } catch (Exception e) {
-            mLog.error("Exception while checking/disabling channel for frequency {}: {}", frequency, e.getMessage(), e);
-        } finally {
+
+            // If, after checking all active calls, there's no reason to keep the channel, disable it.
+            // This handles the case where calls are active but are unmonitored or are losing duplicates.
+            if (!shouldKeepChannelActive)
+            {
+                Channel channelToDisable = mAllocatedTrafficChannelMap.get(frequency);
+                if (channelToDisable != null)
+                {
+                    mLog.debug("Disabling channel on frequency {} as all active calls are unmonitored or non-winning duplicates. tracker 1 complete? {} TG1: {}  tracker 2 complete?{} TG2: {}", frequency, tracker1 != null ? tracker1.isComplete() : true, tracker1.getEvent().getIdentifierCollection().getToIdentifier().getValue(), tracker2 != null ? tracker2.isComplete() : true, tracker2.getEvent().getIdentifierCollection().getToIdentifier().getValue());
+                    broadcast(new ChannelEvent(channelToDisable, Event.REQUEST_DISABLE));
+                }
+            }
+        }
+        finally
+        {
             mLock.unlock();
         }
     }
@@ -833,8 +914,6 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             broadcast(tracker);
 
             updateTimeslotMuteState(frequency, timeslot);
-
-
             checkAndDisableChannelIfNeeded(frequency);
 
             return null;
@@ -1345,6 +1424,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     {
         boolean aliasAllowed = getAliasList() == null || getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
 
+        // ** START DUPLICATE CALL CHECK ** //todo will not work for patch groups
+        if(aliasAllowed) {
+            Identifier talkgroup = ic.getToIdentifier();
+            if (!isDataChannelGrant && talkgroup instanceof TalkgroupIdentifier) {
+                String systemId = mParentChannel.getSystem();
+                String siteId = mParentChannel.getSite();
+                long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                double rssi = mParentChannel.getRssi();
+
+                aliasAllowed = DuplicateCallManager.getInstance().acquireCall(systemId, talkgroupIdValue, siteId, rssi);
+                mLog.debug("Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
+            }
+        }
+
 
         if(ic instanceof MutableIdentifierCollection) {
             // Add system identifiers from the captured broadcast messages
@@ -1539,7 +1632,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         long frequency = apco25Channel.getDownlinkFrequency();
         ic.setTimeslot(timeslot);
 
-        P25TrafficChannelEventTracker tracker = getTrackerRemoveIfStale(apco25Channel, timestamp);
+        // ** START DUPLICATE CALL CHECK ** //todo will not work for patch groups
+        if(aliasAllowed) {
+            Identifier talkgroup = ic.getToIdentifier();
+            if (!isDataChannelGrant && talkgroup instanceof TalkgroupIdentifier) {
+                String systemId = mParentChannel.getSystem();
+                String siteId = mParentChannel.getSite();
+                long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
+                double rssi = mParentChannel.getRssi();
+
+                aliasAllowed = DuplicateCallManager.getInstance().acquireCall(systemId, talkgroupIdValue, siteId, rssi);
+                mLog.debug("Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
+            }
+        }
+            P25TrafficChannelEventTracker tracker = getTrackerRemoveIfStale(apco25Channel, timestamp);
 
         if(tracker != null && tracker.isSameCallCheckingToOnly(ic, timestamp))
         {
