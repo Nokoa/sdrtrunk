@@ -98,6 +98,17 @@ public class Alias
     }
 
     /**
+     * Determines if this alias represents a configuration that should be monitored
+     * (recorded, streamed, or listened to).
+     * @return true if the alias configuration should result in monitoring.
+     */
+    @JsonIgnore
+    public boolean isMonitored()
+    {
+        return isRecordable() || isStreamable() || getPlaybackPriority() != Priority.DO_NOT_MONITOR;
+    }
+
+    /**
      * Count of non-audio identifiers for this alias
      */
     @JsonIgnore

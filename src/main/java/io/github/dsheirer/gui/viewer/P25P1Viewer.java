@@ -178,7 +178,7 @@ public class P25P1Viewer extends VBox
                 //Setup a temporary event bus to capture channel start processing requests
                 EventBus eventBus = new EventBus("debug");
                 eventBus.register(messagePackager);
-                P25TrafficChannelManager trafficChannelManager = new P25TrafficChannelManager(empty);
+                P25TrafficChannelManager trafficChannelManager = new P25TrafficChannelManager(empty, null);
                 trafficChannelManager.setInterModuleEventBus(eventBus);
 
                 //Register to receive events

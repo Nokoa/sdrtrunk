@@ -166,7 +166,7 @@ public class P25P2MessageFramer implements Listener<Dibit>
         ProcessingChain processingChain = new ProcessingChain(channel, new AliasModel());
 
         processingChain.addAudioSegmentListener(recordingManager);
-        P25TrafficChannelManager trafficChannelManager = new P25TrafficChannelManager(channel);
+        P25TrafficChannelManager trafficChannelManager = new P25TrafficChannelManager(channel, aliasList);
         PatchGroupManager patchGroupManager = new PatchGroupManager();
         processingChain.addModule(new P25P2DecoderState(channel, P25P2Message.TIMESLOT_1, trafficChannelManager,
                 patchGroupManager));

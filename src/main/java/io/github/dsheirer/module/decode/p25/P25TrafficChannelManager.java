@@ -18,6 +18,10 @@
  */
 package io.github.dsheirer.module.decode.p25;
 
+import io.github.dsheirer.alias.Alias;
+import io.github.dsheirer.alias.AliasList;
+import io.github.dsheirer.alias.AliasModel;
+import io.github.dsheirer.alias.id.priority.Priority;
 import io.github.dsheirer.channel.IChannelDescriptor;
 import io.github.dsheirer.controller.channel.Channel;
 import io.github.dsheirer.controller.channel.Channel.ChannelType;
@@ -26,6 +30,7 @@ import io.github.dsheirer.controller.channel.ChannelEvent.Event;
 import io.github.dsheirer.controller.channel.IChannelEventListener;
 import io.github.dsheirer.controller.channel.IChannelEventProvider;
 import io.github.dsheirer.controller.channel.event.ChannelStartProcessingRequest;
+import io.github.dsheirer.identifier.Form;
 import io.github.dsheirer.identifier.Identifier;
 import io.github.dsheirer.identifier.IdentifierCollection;
 import io.github.dsheirer.identifier.MutableIdentifierCollection;
@@ -52,9 +57,11 @@ import io.github.dsheirer.module.decode.p25.identifier.channel.P25P2ExplicitChan
 import io.github.dsheirer.module.decode.p25.phase1.DecodeConfigP25Phase1;
 import io.github.dsheirer.module.decode.p25.phase1.message.IFrequencyBand;
 import io.github.dsheirer.module.decode.p25.phase1.message.P25P1Message;
+import io.github.dsheirer.module.decode.p25.phase1.message.lc.standard.LCRFSSStatusBroadcast;
 import io.github.dsheirer.module.decode.p25.phase1.message.pdu.ambtc.osp.AMBTCNetworkStatusBroadcast;
 import io.github.dsheirer.module.decode.p25.phase1.message.tsbk.Opcode;
 import io.github.dsheirer.module.decode.p25.phase1.message.tsbk.standard.osp.NetworkStatusBroadcast;
+import io.github.dsheirer.module.decode.p25.phase1.message.tsbk.standard.osp.RFSSStatusBroadcast;
 import io.github.dsheirer.module.decode.p25.phase2.DecodeConfigP25Phase2;
 import io.github.dsheirer.module.decode.p25.phase2.enumeration.ScrambleParameters;
 import io.github.dsheirer.module.decode.p25.phase2.message.mac.MacOpcode;
@@ -64,12 +71,8 @@ import io.github.dsheirer.module.decode.p25.reference.VoiceServiceOptions;
 import io.github.dsheirer.module.decode.traffic.TrafficChannelManager;
 import io.github.dsheirer.sample.Listener;
 import io.github.dsheirer.source.config.SourceConfigTuner;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Queue;
+
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedTransferQueue;
 import java.util.concurrent.locks.ReentrantLock;
@@ -121,19 +124,29 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     private TrafficChannelTeardownMonitor mTrafficChannelTeardownMonitor = new TrafficChannelTeardownMonitor();
     private Channel mParentChannel;
     private ScrambleParameters mPhase2ScrambleParameters;
+    private NetworkStatusBroadcast mTSBKNetworkStatusBroadcast;
+    private AMBTCNetworkStatusBroadcast mAMBTCNetworkStatusBroadcast;
+    private LCRFSSStatusBroadcast mLCRFSSStatusBroadcast;
+    private RFSSStatusBroadcast mTSBKRFSSStatusBroadcast;
     private Listener<IMessage> mMessageListener;
     private boolean mIgnoreDataCalls;
     //Used only for data calls
     private DecodeEventDuplicateDetector mDuplicateDetector = new DecodeEventDuplicateDetector();
     private TalkerAliasManager mTalkerAliasManager = new TalkerAliasManager();
+    private AliasList mAliasList;
+    private final Map<Long, Set<Integer>> mTimeslotsToMute = new ConcurrentHashMap<>();
+
+
+
 
     /**
      * Constructs an instance.
      * @param parentChannel (ie control channel) that owns this traffic channel manager
      */
-    public P25TrafficChannelManager(Channel parentChannel)
+    public P25TrafficChannelManager(Channel parentChannel, AliasList aliasList)
     {
         mParentChannel = parentChannel;
+        mAliasList = aliasList;
 
         if(parentChannel.getDecodeConfiguration() instanceof DecodeConfigP25Phase1 phase1)
         {
@@ -147,6 +160,58 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             createPhase1TrafficChannels(phase2.getTrafficChannelPoolSize(), new DecodeConfigP25Phase1());
             createPhase2TrafficChannels(phase2.getTrafficChannelPoolSize(), phase2);
         }
+    }
+    /**
+     * Checks if decoding for a specific timeslot on a frequency should be muted.
+     * @return true if the timeslot should be muted, false otherwise.
+     */
+    public boolean isTimeslotMuted(long frequency, int timeslot)
+    {
+        if (mTimeslotsToMute.containsKey(frequency))
+        {
+            return mTimeslotsToMute.get(frequency).contains(timeslot);
+        }
+        return false;
+    }
+
+    /**
+     * Updates the mute status for a given timeslot based on its talkgroup.
+     * Mutes the timeslot if its talkgroup is not monitored.
+     */
+    private void updateTimeslotMuteState(long frequency, int timeslot)
+    {
+        // This logic is now self-contained and doesn't affect other threads
+        P25TrafficChannelEventTracker tracker = getTracker(frequency, timeslot);
+
+//        mLog.debug("tracker null? " + (tracker == null));
+        Identifier tg = tracker.getEvent().getIdentifierCollection().getToIdentifier();
+        boolean isMonitored = (tracker != null && !tracker.isComplete() &&
+                getAliasList().isTalkgroupAllowed(tg));
+
+        Set<Integer> mutedSlots = mTimeslotsToMute.computeIfAbsent(frequency, k -> ConcurrentHashMap.newKeySet());
+
+        if(tracker == null || tracker.isComplete()){
+//            mLog.debug("tracker null? " + (tracker== null) + " tracker complete? " + (tracker != null ? tracker.isComplete() : "false"));
+            mutedSlots.remove(timeslot);
+            return;
+        }
+
+        if (isMonitored )
+        {
+//            mLog.debug(tg.getValue() + " is wanted, unmuting slot " + timeslot);
+            // Talkgroup is wanted, so ensure decoding is NOT muted
+            mutedSlots.remove(timeslot);
+        }
+        else
+        {
+//            mLog.debug(tg.getValue() + " is NOT wanted, muting slot " + timeslot + " tracker complete ?" + tracker.isComplete());
+            // Talkgroup is not wanted (or call ended), so mute decoding
+            mutedSlots.add(timeslot);
+        }
+    }
+
+    public AliasList getAliasList() {
+        return mAliasList;
     }
 
     /**
@@ -479,6 +544,9 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 completed = true;
                 broadcast(tracker);
             }
+
+            updateTimeslotMuteState(frequency, timeslot);
+            checkAndDisableChannelIfNeeded(frequency);
         }
         finally
         {
@@ -656,6 +724,57 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     }
 
     /**
+     * Checks and disables a traffic channel if no monitored talkgroups are active.
+     * If both timeslot trackers are either null or complete, this method skips shutdown
+     * so that another process can handle it.
+     *
+     * @param frequency The frequency of the channel to check.
+     */
+    private void checkAndDisableChannelIfNeeded(long frequency) {
+        mLock.lock();
+        try {
+            // Only act on traffic channels, not the control channel
+            if (frequency == getCurrentControlFrequency()) {
+                return;
+            }
+
+            // Fetch both timeslot trackers only once
+            P25TrafficChannelEventTracker tracker1 = getTracker(frequency, 1);
+            P25TrafficChannelEventTracker tracker2 = getTracker(frequency, 2);
+
+            boolean tracker1Inactive = (tracker1 == null) || tracker1.isComplete();
+            boolean tracker2Inactive = (tracker2 == null) || tracker2.isComplete();
+
+            // If both timeslot trackers are null or complete, skip disabling (handled elsewhere)
+            if (tracker1Inactive && tracker2Inactive) {
+                return;
+            }
+
+            // Check for an active, monitored talkgroup on either timeslot
+            for (P25TrafficChannelEventTracker tracker : new P25TrafficChannelEventTracker[]{tracker1, tracker2}) {
+                if (tracker != null && !tracker.isComplete()) {
+                    Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
+                    if (getAliasList().isTalkgroupAllowed(talkgroup)) {
+                        // Found an active, monitored talkgroup; keep the channel
+                        return;
+                    }
+                }
+            }
+
+            // If no active, monitored talkgroup found, disable the channel
+            Channel channelToDisable = mAllocatedTrafficChannelMap.get(frequency);
+            if (channelToDisable != null) {
+//                mLog.debug("Disabling channel on frequency {} as no monitored talkgroups are active.", frequency);
+                broadcast(new ChannelEvent(channelToDisable, Event.REQUEST_DISABLE));
+            }
+        } catch (Exception e) {
+            mLog.error("Exception while checking/disabling channel for frequency {}: {}", frequency, e.getMessage(), e);
+        } finally {
+            mLock.unlock();
+        }
+    }
+
+    /**
      * Processes mac messaging that indicates a call on the current channel.  This update does not update the call
      * duration for the event but will create an event if one does not exist.  Updates to the call duration can only
      * occur
@@ -692,6 +811,11 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 tracker.addDetailsIfMissing(additionalDetails);
                 tracker.addChannelDescriptorIfMissing(channelDescriptor);
                 broadcast(tracker);
+
+                updateTimeslotMuteState(frequency, timeslot);
+
+                checkAndDisableChannelIfNeeded(frequency);
+
                 return tracker.getEvent().getChannelDescriptor();
             }
 
@@ -707,6 +831,12 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             tracker = new P25TrafficChannelEventTracker(callEvent);
             addTracker(tracker, frequency, timeslot);
             broadcast(tracker);
+
+            updateTimeslotMuteState(frequency, timeslot);
+
+
+            checkAndDisableChannelIfNeeded(frequency);
+
             return null;
         }
         finally
@@ -1200,6 +1330,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
      *
      * Note: this method is not thread safe and the calling method must protect access using mLock.
      *
+     * todo shahar: test phase 1 implementation with aliasAllowed parameter
+     *
      * @param apco25Channel for the traffic channel
      * @param serviceOptions for the traffic channel - optional can be null
      * @param ic associated with the channel grant
@@ -1211,6 +1343,29 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                                   IdentifierCollection ic, DecodeEventType decodeEventType,
                                                   boolean isDataChannelGrant, long timestamp, String context)
     {
+        boolean aliasAllowed = getAliasList() == null || getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
+
+
+        if(ic instanceof MutableIdentifierCollection) {
+            // Add system identifiers from the captured broadcast messages
+            if (mTSBKNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getNAC());
+            } else if (mAMBTCNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getNAC());
+            }
+
+            if (mTSBKRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getSite());
+            } else if (mLCRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getSite());
+            }
+        }
         long frequency = apco25Channel.getDownlinkFrequency();
 
         P25TrafficChannelEventTracker tracker = getTrackerRemoveIfStale(frequency, P25P1Message.TIMESLOT_1, timestamp);
@@ -1241,7 +1396,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
-            if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant))
+            if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) && aliasAllowed)
             {
                 Channel trafficChannel = mAvailablePhase1TrafficChannelQueue.poll();
 
@@ -1286,6 +1441,24 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             return;
         }
 
+
+        if(!aliasAllowed)
+        {
+            if(tracker == null)
+            {
+                P25ChannelGrantEvent event = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                        .channelDescriptor(apco25Channel)
+                        .details("PHASE 1 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED) " + (serviceOptions != null ? serviceOptions : ""))
+                        .identifiers(ic)
+                        .build();
+                tracker = new P25TrafficChannelEventTracker(event);
+                addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
+                broadcast(tracker);
+            }
+
+            return;
+        }
+
         String details = isDataChannelGrant ? "PHASE 1 DATA CHANNEL GRANT " : "PHASE 1 CHANNEL GRANT " +
                 (serviceOptions != null ? serviceOptions : "");
 
@@ -1314,6 +1487,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         broadcast(tracker);
     }
 
+
     /**
      * Processes Phase 2 channel grants from both the control channel and from traffic channels to allocate traffic
      * channels and track overall channel usage.  Generates decode events for each new channel that is allocated.
@@ -1331,9 +1505,34 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                                            IdentifierCollection ic, DecodeEventType decodeEventType,
                                            boolean isDataChannelGrant, long timestamp)
     {
-        if(mPhase2ScrambleParameters != null && ic instanceof MutableIdentifierCollection)
+
+        // if no alias list assigned allow all talkgroups to decode, otherwise check if there is a point to decode them
+        boolean aliasAllowed = getAliasList() == null || getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
+
+        if(  ic instanceof MutableIdentifierCollection)
         {
-            ((MutableIdentifierCollection)ic).silentUpdate(ScrambleParameterIdentifier.create(mPhase2ScrambleParameters));
+            if(mPhase2ScrambleParameters != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(ScrambleParameterIdentifier.create(mPhase2ScrambleParameters));
+            }
+
+            // Add system identifiers from the captured broadcast messages
+            if (mTSBKNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKNetworkStatusBroadcast.getNAC());
+            } else if (mAMBTCNetworkStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getWacn());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getSystem());
+                ((MutableIdentifierCollection) ic).silentUpdate(mAMBTCNetworkStatusBroadcast.getNAC());
+            }
+
+            if(mTSBKRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mTSBKRFSSStatusBroadcast.getSite());
+            } else if (mLCRFSSStatusBroadcast != null) {
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getRfss());
+                ((MutableIdentifierCollection) ic).silentUpdate(mLCRFSSStatusBroadcast.getSite());
+            }
         }
 
         int timeslot = apco25Channel.getTimeslot();
@@ -1348,16 +1547,32 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             if(from != null && tracker.isDifferentTalker(from))
             {
-                P25ChannelGrantEvent continuationGrantEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
-                    .channelDescriptor(apco25Channel)
-                    .details("CONTINUE - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
-                    .identifiers(ic)
-                    .timeslot(apco25Channel.getTimeslot())
-                    .build();
+                if(aliasAllowed)
+                {
+                    P25ChannelGrantEvent continuationGrantEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                            .channelDescriptor(apco25Channel)
+                            .details("CONTINUE - PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""))
+                            .identifiers(ic)
+                            .timeslot(apco25Channel.getTimeslot())
+                            .build();
 
-                tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
-                addTracker(tracker, frequency, timeslot);
-                broadcast(tracker);
+                    tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
+                    addTracker(tracker, frequency, timeslot);
+                    broadcast(tracker);
+                }
+                else
+                {
+                    P25ChannelGrantEvent continuationGrantEvent = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                            .channelDescriptor(apco25Channel)
+                            .details("CONTINUE - PHASE 2 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED) " + (serviceOptions != null ? serviceOptions : ""))
+                            .identifiers(ic)
+                            .timeslot(apco25Channel.getTimeslot())
+                            .build();
+
+                    tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
+                    addTracker(tracker, frequency, timeslot);
+                    broadcast(tracker);
+                }
             }
 
             //update the ending timestamp so that the duration value is correctly calculated
@@ -1367,7 +1582,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             //Even though we have a tracked event, the initial channel grant may have been rejected.  Check to see if there
             //is a traffic channel allocated.  If not, allocate one and update the event description.
             if(!mAllocatedTrafficChannelMap.containsKey(frequency) && !(mIgnoreDataCalls && isDataChannelGrant) &&
-                (getCurrentControlFrequency() != frequency))
+                (getCurrentControlFrequency() != frequency) && aliasAllowed)
             {
                 Channel trafficChannel = mAvailablePhase2TrafficChannelQueue.poll();
 
@@ -1398,6 +1613,20 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
             tracker = new P25TrafficChannelEventTracker(event);
             addTracker(tracker, frequency, P25P1Message.TIMESLOT_1);
+            broadcast(tracker);
+            return;
+        }
+
+        if(!aliasAllowed){
+            P25ChannelGrantEvent event = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
+                    .channelDescriptor(apco25Channel)
+                    .details("PHASE 2 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED) " + (serviceOptions != null ? serviceOptions : ""))
+                    .identifiers(ic)
+                    .timeslot(apco25Channel.getTimeslot())
+                    .build();
+
+            tracker = new P25TrafficChannelEventTracker(event);
+            addTracker(tracker, frequency, apco25Channel.getTimeslot());
             broadcast(tracker);
             return;
         }
@@ -1653,7 +1882,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     /**
      * Processes the decoded message stream and captures P25 Phase II randomizer (scramble) parameters from the TSBK
      * network status broadcast message so that we can pre-load any Phase2 channels with the correct descrambler
-     * sequence.
+     * sequence. As well as System information
      *
      * @return listener to process the message stream.
      */
@@ -1663,15 +1892,31 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         if(mMessageListener == null)
         {
             mMessageListener = message -> {
-                if(mPhase2ScrambleParameters == null && message.isValid())
+                if(message.isValid())
                 {
                     if(message instanceof NetworkStatusBroadcast nsb)
                     {
-                        mPhase2ScrambleParameters = nsb.getScrambleParameters();
+                        mTSBKNetworkStatusBroadcast = nsb;
+                        if(mPhase2ScrambleParameters == null)
+                        {
+                            mPhase2ScrambleParameters = nsb.getScrambleParameters();
+                        }
                     }
-                    else if(message instanceof AMBTCNetworkStatusBroadcast nsb)
+                    else if(message instanceof AMBTCNetworkStatusBroadcast ansb)
                     {
-                        mPhase2ScrambleParameters = nsb.getScrambleParameters();
+                        mAMBTCNetworkStatusBroadcast = ansb;
+                        if(mPhase2ScrambleParameters == null)
+                        {
+                            mPhase2ScrambleParameters = ansb.getScrambleParameters();
+                        }
+                    }
+                    else if (message instanceof LCRFSSStatusBroadcast lcrfss)
+                    {
+                        mLCRFSSStatusBroadcast = lcrfss;
+                    }
+                    else if (message instanceof RFSSStatusBroadcast tsbkrfss)
+                    {
+                        mTSBKRFSSStatusBroadcast = tsbkrfss;
                     }
                 }
             };
