@@ -56,6 +56,7 @@ public class DuplicateCallManager {
 
             // Case 2: This site is already the winner. Refresh its entry with the latest RSSI and timestamp.
             if (currentHolder.getSiteId().equals(siteId)) {
+                newCall.timestamp = System.currentTimeMillis(); // refresh timestamp so it doesn't become stale
                 return newCall;
             }
 

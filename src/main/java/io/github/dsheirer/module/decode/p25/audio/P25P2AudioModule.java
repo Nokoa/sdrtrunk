@@ -25,10 +25,8 @@ import io.github.dsheirer.audio.codec.mbe.AmbeAudioModule;
 import io.github.dsheirer.audio.squelch.SquelchState;
 import io.github.dsheirer.audio.squelch.SquelchStateEvent;
 import io.github.dsheirer.bits.BinaryMessage;
-import io.github.dsheirer.identifier.Identifier;
-import io.github.dsheirer.identifier.IdentifierUpdateNotification;
-import io.github.dsheirer.identifier.IdentifierUpdateProvider;
-import io.github.dsheirer.identifier.Role;
+import io.github.dsheirer.identifier.*;
+import io.github.dsheirer.identifier.talkgroup.TalkgroupIdentifier;
 import io.github.dsheirer.identifier.tone.AmbeTone;
 import io.github.dsheirer.identifier.tone.P25ToneIdentifier;
 import io.github.dsheirer.identifier.tone.Tone;
@@ -37,6 +35,7 @@ import io.github.dsheirer.identifier.tone.ToneIdentifierMessage;
 import io.github.dsheirer.identifier.tone.ToneSequence;
 import io.github.dsheirer.message.IMessage;
 import io.github.dsheirer.message.IMessageProvider;
+import io.github.dsheirer.module.decode.p25.DuplicateCallManager;
 import io.github.dsheirer.module.decode.p25.phase2.message.EncryptionSynchronizationSequence;
 import io.github.dsheirer.module.decode.p25.phase2.message.mac.MacMessage;
 import io.github.dsheirer.module.decode.p25.phase2.message.mac.structure.MacStructure;
@@ -68,6 +67,9 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
     private boolean mEncryptedCall = false;
     private Listener<IMessage> mMessageListener;
     private Boolean talkgroupAllowed;
+    String system;
+    String site;
+    long talkgroupId = -1;
 
     public P25P2AudioModule(UserPreferences userPreferences, int timeslot, AliasList aliasList) {
         super(userPreferences, aliasList, timeslot);
@@ -94,6 +96,29 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
         mEncryptedCallStateEstablished = false;
         mEncryptedCall = false;
         talkgroupAllowed = null;
+        List<Identifier> systemList = getIdentifierCollection().getIdentifiers(Form.SYSTEM);
+        List<Identifier> siteList = getIdentifierCollection().getIdentifiers(Form.SITE);
+        if (systemList != null && !systemList.isEmpty()) {
+            system = systemList.get(0).getValue().toString();
+        } else {
+            system = null;
+        }
+
+        if(siteList != null && !siteList.isEmpty()) {
+            site = siteList.get(0).getValue().toString();
+        } else {
+            site = null;
+        }
+
+        Identifier identifier = getIdentifierCollection().getToIdentifier();
+        if(identifier instanceof TalkgroupIdentifier){
+            talkgroupId =((TalkgroupIdentifier) identifier).getValue();
+
+        }else{
+            talkgroupId = -1;
+        }
+
+
     }
 
     @Override
@@ -126,7 +151,11 @@ public class P25P2AudioModule extends AmbeVocoderAudioModule implements Identifi
             if (!isTalkgroupAllowed()) {
                 return;
             }
-
+            if(system != null && site != null && talkgroupId == -1){
+                if(!DuplicateCallManager.getInstance().isWinningSite(system, talkgroupId, site)){
+                    return;
+                }
+            }
             if (message instanceof AbstractVoiceTimeslot abstractVoiceTimeslot) {
                 if (mEncryptedCallStateEstablished) {
                     if (!mEncryptedCall) {

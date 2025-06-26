@@ -177,6 +177,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     /**
      * Updates the mute status for a given timeslot based on its talkgroup.
      * Mutes the timeslot if its talkgroup is not monitored.
+     * todo: perhaps improve this, because as channels are released, they will be marked here as monitor false, and hence muted, maybe instead, just remove them from list? Maybe have 2 seperate methods, one to mute, one to unmute, or set mute true or false
      */
     private void updateTimeslotMuteState(long frequency, int timeslot)
     {
@@ -207,6 +208,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
         if(tracker == null || tracker.isComplete()){
 //            mLog.debug("tracker null? " + (tracker== null) + " tracker complete? " + (tracker != null ? tracker.isComplete() : "false"));
+            mLog.debug("updateTimeslotMuteState() tracker is null or complete, unmuting slot {} for frequency {}", timeslot, frequency);
             mutedSlots.remove(timeslot);
             return;
         }
@@ -535,6 +537,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     String siteId = mParentChannel.getSite();
                     long talkgroupIdValue = ((TalkgroupIdentifier) talkgroup).getValue();
                     DuplicateCallManager.getInstance().releaseCall(systemId, talkgroupIdValue, siteId);
+//                    updateTimeslotMuteState(frequency, timeslot);
+                    checkAndDisableChannelIfNeeded(frequency);
                 }
 
                 // ** END DUPLICATE CALL RELEASE **
@@ -577,7 +581,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 broadcast(tracker);
                 // ** START DUPLICATE CALL RELEASE **
 
-                mLog.debug("Attempting to release duplicate call for frequency: {}, timeslot: {}, timestamp: {}, context: {}",
+                mLog.debug("processP2TrafficEndPushToTalk()  Attempting to release duplicate call for frequency: {}, timeslot: {}, timestamp: {}, context: {}",
                         frequency, timeslot, timestamp, context);
                     Identifier talkgroup = tracker.getEvent().getIdentifierCollection().getToIdentifier();
                     if(talkgroup instanceof TalkgroupIdentifier) {
@@ -588,11 +592,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     }
 
                 // ** END DUPLICATE CALL RELEASE **
-                updateTimeslotMuteState(frequency, timeslot);
-                checkAndDisableChannelIfNeeded(frequency);
-            }else{
-                mLog.debug("Unable to release duplicate call for frequency: {}, timeslot: {}, timestamp: {}, context: {}. Tracker is null or not started.",
+//                updateTimeslotMuteState(frequency, timeslot);
+                mLog.debug("processP2TrafficEndPushToTalk() checkAndDisableChannelIfNeeded for frequency: {}, timeslot: {}, timestamp: {}, context: {}",
                         frequency, timeslot, timestamp, context);
+                checkAndDisableChannelIfNeeded(frequency);
             }
 
 
@@ -866,7 +869,11 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 Channel channelToDisable = mAllocatedTrafficChannelMap.get(frequency);
                 if (channelToDisable != null)
                 {
-                    mLog.debug("Disabling channel on frequency {} as all active calls are unmonitored or non-winning duplicates. tracker 1 complete? {} TG1: {}  tracker 2 complete?{} TG2: {}", frequency, tracker1 != null ? tracker1.isComplete() : true, tracker1.getEvent().getIdentifierCollection().getToIdentifier().getValue(), tracker2 != null ? tracker2.isComplete() : true, tracker2.getEvent().getIdentifierCollection().getToIdentifier().getValue());
+                    try {
+                        mLog.debug("Disabling channel on frequency {} as all active calls are unmonitored or non-winning duplicates. tracker 1 complete? {} TG1: {}  tracker 2 complete?{} TG2: {}", frequency, tracker1 != null ? tracker1.isComplete() : true, tracker1.getEvent().getIdentifierCollection().getToIdentifier().getValue(), tracker2 != null ? tracker2.isComplete() : true, tracker2.getEvent().getIdentifierCollection().getToIdentifier().getValue());
+                    }catch (NullPointerException npe){
+                mLog.debug("One of the trackers is null... frequency: {} tracker slot 1 null? {} tracket slot 2 null? ",frequency, tracker1 == null, tracker2 == null);
+                    }
                     broadcast(new ChannelEvent(channelToDisable, Event.REQUEST_DISABLE));
                 }
             }
@@ -915,9 +922,24 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                 tracker.addChannelDescriptorIfMissing(channelDescriptor);
                 broadcast(tracker);
 
+                Identifier tg = ic.getToIdentifier();
+                if(getAliasList().isTalkgroupAllowed(tg)) {
+                    if (tg instanceof TalkgroupIdentifier) {
+                        String systemId = mParentChannel.getSystem();
+                        String siteId = mParentChannel.getSite();
+                        long talkgroupIdValue = ((TalkgroupIdentifier) tg).getValue();
+                        boolean siteAllowed = DuplicateCallManager.getInstance().isWinningSite(systemId, talkgroupIdValue, siteId); // refresh the winning site state so it doesn't get stale
+                        if (!siteAllowed) {
+                            mLog.debug("processP2TrafficCurrentUser() site not allowed, calling checkAndDisableChannelIfNeeded for frequency: {}, timeslot: {}, timestamp: {}, context: {}",
+                                    frequency, timeslot, timestamp, context);
+                            checkAndDisableChannelIfNeeded(frequency); //todo, if a second slot is active with a talkgroup that is allowed on the site, this will cause this to run very often.
+                        }
+                    }
+                }
                 return tracker.getEvent().getChannelDescriptor();
             }
 
+            //todo check if this talkgroup that was detected in the traffic channel first is allowed or not. Just to indicate a proper message in events. I don't think anything else here matters though.
             //Create a new event for the current call.
             DecodeEventType eventType = getEventType(macOpcode, serviceOptions, null);
             P25ChannelGrantEvent callEvent = P25ChannelGrantEvent.builder(eventType, timestamp, serviceOptions)
@@ -930,11 +952,15 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             tracker = new P25TrafficChannelEventTracker(callEvent);
             addTracker(tracker, frequency, timeslot);
             broadcast(tracker);
-
-            mLog.debug("processP2TrafficCurrentUser() Calling updateTimeSlotMuteState() and checkAndDisableChannel if needed for frequency: {}, timeslot: {} talkgroups: {}",
-                    frequency, timeslot, ic.getToIdentifier().getValue());
-            updateTimeslotMuteState(frequency, timeslot);
-            checkAndDisableChannelIfNeeded(frequency);
+            Identifier tg = ic.getToIdentifier();
+            if(tg instanceof TalkgroupIdentifier) {
+                String systemId = mParentChannel.getSystem();
+                String siteId = mParentChannel.getSite();
+                long talkgroupIdValue = ((TalkgroupIdentifier) tg).getValue();
+                mLog.debug("Attempting to acquire site in initial detection of call in traffic channel, for talkgroup: {} on system: {} and site: {}. Frequency: {} timeslot: {}",
+                        tg.getValue(), systemId, siteId, frequency, timeslot);
+                DuplicateCallManager.getInstance().acquireCall(systemId, talkgroupIdValue, siteId, mParentChannel.getRssi());
+            }
 
             return null;
         }
@@ -956,6 +982,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     public void processP2ChannelGrant(APCO25Channel apco25Channel, ServiceOptions serviceOptions,
                                       IdentifierCollection ic, MacOpcode macOpcode, long timestamp, String context)
     {
+        mLog.debug("processP2ChannelGrant() apco25Channel: {}, serviceOptions: {}, ic: {}, macOpcode: {}, timestamp: {}, context: {}",
+                apco25Channel, serviceOptions, ic, macOpcode, timestamp, context);
         mLock.lock();
 
         try
@@ -1599,7 +1627,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         }
 
         broadcast(tracker);
-        updateTimeslotMuteState(frequency, P25P1Message.TIMESLOT_1);
+//        updateTimeslotMuteState(frequency, P25P1Message.TIMESLOT_1);
 
     }
 
@@ -1623,7 +1651,9 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
     {
 
         // if no alias list assigned allow all talkgroups to decode, otherwise check if there is a point to decode them
-        boolean aliasAllowed = getAliasList() == null || getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
+        boolean aliasAllowed = getAliasList().isTalkgroupAllowed(ic.getToIdentifier());
+//        mLog.debug("processPhase2ChannelGrant() apco25Channel: {}, serviceOptions: {}, ic: {}, decodeEventType: {}, isDataChannelGrant: {}, timestamp: {}, aliasAllowed: {}",
+//                apco25Channel, serviceOptions, ic, decodeEventType, isDataChannelGrant, timestamp, aliasAllowed);
 
         if(  ic instanceof MutableIdentifierCollection)
         {
@@ -1667,9 +1697,10 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
 
                 aliasAllowed = DuplicateCallManager.getInstance().acquireCall(systemId, talkgroupIdValue, siteId, rssi);
                 if(!aliasAllowed){
+                    mLog.debug("Site not allowed");
                     reason = "IGNORED (BETTER SITE AVAILABLE) ";
                 }
-                mLog.debug("processPhase2ChannelGrant() Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
+//                mLog.debug("processPhase2ChannelGrant() Duplicate call check for talkgroup {} on system {} site {}: {}", talkgroupIdValue, systemId, siteId, aliasAllowed);
             }
         }
             P25TrafficChannelEventTracker tracker = getTrackerRemoveIfStale(apco25Channel, timestamp);
@@ -1692,8 +1723,6 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
                     addTracker(tracker, frequency, timeslot);
                     broadcast(tracker);
-                    updateTimeslotMuteState(frequency, timeslot);
-
                 }
                 else
                 {
@@ -1707,7 +1736,6 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     tracker = new P25TrafficChannelEventTracker(continuationGrantEvent);
                     addTracker(tracker, frequency, timeslot);
                     broadcast(tracker);
-                    updateTimeslotMuteState(frequency, timeslot);
 
                 }
             }
@@ -1728,7 +1756,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
                     tracker.setDetails("PHASE 2 CHANNEL GRANT " + (serviceOptions != null ? serviceOptions : ""));
                     tracker.addChannelDescriptorIfMissing(apco25Channel);
                     broadcast(tracker);
-                    updateTimeslotMuteState(frequency, timeslot);
+//                    updateTimeslotMuteState(frequency, timeslot);
                     requestTrafficChannelStart(trafficChannel, apco25Channel, ic, timestamp);
                 }
                 else
@@ -1758,7 +1786,7 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         if(!aliasAllowed){
             P25ChannelGrantEvent event = P25ChannelGrantEvent.builder(decodeEventType, timestamp, serviceOptions)
                     .channelDescriptor(apco25Channel)
-                    .details("PHASE 2 CHANNEL GRANT IGNORED (ALIAS NOT ALLOWED) " + (serviceOptions != null ? serviceOptions : ""))
+                    .details("PHASE 2 CHANNEL GRANT " + reason + (serviceOptions != null ? serviceOptions : ""))
                     .identifiers(ic)
                     .timeslot(apco25Channel.getTimeslot())
                     .build();
@@ -1766,7 +1794,8 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
             tracker = new P25TrafficChannelEventTracker(event);
             addTracker(tracker, frequency, apco25Channel.getTimeslot());
             broadcast(tracker);
-            updateTimeslotMuteState(frequency, timeslot);
+//            mLog.debug("processPhase2ChannelGrant() alias not allowed, calling updateTimeSlotMuteState()");
+//            updateTimeslotMuteState(frequency, timeslot);
             return;
         }
 
@@ -1796,8 +1825,6 @@ public class P25TrafficChannelManager extends TrafficChannelManager implements I
         }
 
         broadcast(tracker);
-        updateTimeslotMuteState(frequency, timeslot);
-
     }
 
     /**
